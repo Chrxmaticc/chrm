@@ -13,7 +13,8 @@ class Presence(commands.Cog):
 
     @tasks.loop(seconds=60)
     async def rotate_status(self):
-        if self.bot.is_ready() and not self.bot.config.get_feature("custom_status"):
+        # only rotate if locked_presence is False
+        if self.bot.is_ready() and not getattr(self.bot, 'locked_presence', False):
             current = next(self.statuses)
             await self.bot.change_presence(activity=discord.CustomActivity(name=current))
 
@@ -22,34 +23,53 @@ class Presence(commands.Cog):
         await self.bot.wait_until_ready()
 
     @commands.command()
-    async def status(self, ctx, *, text):
-        self.bot.config.data["features"]["custom_status"] = text
-        await self.bot.change_presence(activity=discord.CustomActivity(name=text.lower()))
-        emoji = self.bot.config.get_emoji("success")
-        await ctx.send(f"{emoji} status locked to: {text.lower()}")
-
-    @commands.command()
-    async def unlockstatus(self, ctx):
-        self.bot.config.data["features"]["custom_status"] = None
-        emoji = self.bot.config.get_emoji("success")
-        await ctx.send(f"{emoji} status rotator unlocked.")
-
-    @commands.command()
     async def rpc(self, ctx, activity_type: str, *, text):
+        """usage: .rpc playing minecraft"""
         types = {
             "playing": discord.ActivityType.playing,
             "watching": discord.ActivityType.watching,
-            "listening": discord.ActivityType.listening
+            "listening": discord.ActivityType.listening,
+            "competing": discord.ActivityType.competing
         }
-        act_type = types.get(activity_type.lower(), discord.ActivityType.playing)
+        act_type = types.get(activity_type.lower())
+        
+        if not act_type:
+            error = self.bot.config.get_emoji("error")
+            return await ctx.send(f"{error} invalid type. use playing, watching, listening, or competing.")
+        
+        self.bot.locked_presence = True
         await self.bot.change_presence(activity=discord.Activity(type=act_type, name=text.lower()))
+        
         emoji = self.bot.config.get_emoji("success")
-        await ctx.send(f"{emoji} rpc set to {activity_type.lower()} {text.lower()}")
+        await ctx.send(f"{emoji} rpc updated: {activity_type.lower()} **{text.lower()}**")
 
     @commands.command()
-    async def lyricsync(self, ctx):
-        emoji = self.bot.config.get_emoji("loading")
-        await ctx.send(f"{emoji} starting lyric sync... (requires spotify api hookup)")
+    async def stream(self, ctx, url: str, *, title):
+        """usage: .stream https://twitch.tv/you chrm on top"""
+        if not url.startswith("http"):
+            error = self.bot.config.get_emoji("error")
+            return await ctx.send(f"{error} invalid url.")
+            
+        self.bot.locked_presence = True
+        # THIS IS THE FIX: Use discord.Streaming, not discord.Activity
+        await self.bot.change_presence(activity=discord.Streaming(name=title.lower(), url=url))
+        
+        emoji = self.bot.config.get_emoji("success")
+        await ctx.send(f"{emoji} now streaming: **{title.lower()}**")
+
+    @commands.command()
+    async def customstatus(self, ctx, *, text):
+        self.bot.locked_presence = True
+        await self.bot.change_presence(activity=discord.CustomActivity(name=text.lower()))
+        emoji = self.bot.config.get_emoji("success")
+        await ctx.send(f"{emoji} custom status set: {text.lower()}")
+
+    @commands.command()
+    async def clearstatus(self, ctx):
+        self.bot.locked_presence = False
+        await self.bot.change_presence(activity=discord.CustomActivity(name=next(self.statuses)))
+        emoji = self.bot.config.get_emoji("success")
+        await ctx.send(f"{emoji} presence cleared & rotator unlocked.")
 
 async def setup(bot):
     await bot.add_cog(Presence(bot))
