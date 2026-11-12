@@ -6,15 +6,23 @@ import discord
 from discord.ext import commands
 
 # ==========================================
-# 1. MINIMAL WEB SERVER (Runs in background)
+# 1. MINIMAL WEB SERVER (Fix 405 Error)
 # ==========================================
 class SimpleHandler(BaseHTTPRequestHandler):
+    # Render and UptimeRobot use GET and HEAD
     def do_GET(self):
-        # This is what UptimeRobot will ping
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
         self.wfile.write(b"chrm is online")
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+
+    def log_message(self, format, *args):
+        pass # Silence the logs so it doesn't spam your console
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
@@ -22,9 +30,7 @@ def run_web_server():
     print(f"🌐 Web server running on port {port}")
     server.serve_forever()
 
-# Start the web server in a separate thread IMMEDIATELY
 threading.Thread(target=run_web_server, daemon=True).start()
-
 
 # ==========================================
 # 2. THE REGULAR BOT
@@ -33,7 +39,20 @@ class ConfigManager:
     def __init__(self, user_data):
         with open("config.json", "r") as f:
             self.data = json.load(f)
-        self.data.update(user_data)
+        
+        # Merge user data safely
+        if user_data:
+            self.data.update(user_data)
+
+        # BULLETPROOFING: Ensure all features exist
+        if "features" not in self.data:
+            self.data["features"] = {}
+        if "autorespond" not in self.data["features"]:
+            self.data["features"]["autorespond"] = {}
+        if "autoreact" not in self.data["features"]:
+            self.data["features"]["autoreact"] = {}
+        if "afk" not in self.data["features"]:
+            self.data["features"]["afk"] = {"enabled": False, "message": "afk"}
 
     def get_emoji(self, name):
         return self.data.get("emojis", {}).get(name, "")
