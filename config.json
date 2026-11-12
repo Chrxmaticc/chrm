@@ -1,0 +1,22 @@
+{
+  "settings": {
+    "prefix": ".",
+    "delays_enabled": true,
+    "delay_min": 1.5,
+    "delay_max": 4.5
+  },
+  "emojis": {
+    "success": "<:chrm_success:1234567890>",
+    "error": "<:chrm_error:1234567890>",
+    "loading": "<a:chrm_loading:1234567890>",
+    "tea": "<:chrm_tea:1234567890>",
+    "image": "<:chrm_image:1234567890>",
+    "afk": "<:chrm_afk:1234567890>"
+  },
+  "features": {
+    "afk": {"enabled": false, "message": "<:chrm_afk:1234567890> i am currently afk."},
+    "autorespond": {},
+    "autoreact": {},
+    "custom_status": null
+  }
+}
