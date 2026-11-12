@@ -2,30 +2,48 @@ import os
 import json
 import asyncio
 import random
+import traceback
+import uvicorn
+from fastapi import FastAPI
 from dotenv import load_dotenv
 import discord
 from discord.ext import commands
 
-from security import decrypt_token
-
 load_dotenv()
 
-# --- config manager ---
+# ==========================================
+# 1. WEB SERVER (Starts instantly for Render)
+# ==========================================
+app = FastAPI()
+bot_instance = None 
+
+@app.get("/")
+def read_root():
+    return {"status": "chrm is running"}
+
+@app.get("/health")
+def health_check():
+    is_ready = bot_instance.is_ready() if bot_instance else False
+    return {"status": "online", "bot_ready": is_ready}
+
+# ==========================================
+# 2. CONFIG MANAGER
+# ==========================================
 class ConfigManager:
-    def __init__(self, data):
-        # we copy the default config and update it with user specific data
+    def __init__(self, user_data):
         with open("config.json", "r") as f:
             self.data = json.load(f)
-        self.data.update(data)
+        self.data.update(user_data)
 
     def get_emoji(self, name):
-        return self.data["emojis"].get(name, "")
+        return self.data.get("emojis", {}).get(name, "")
 
     def get_feature(self, name):
-        return self.data["features"].get(name)
+        return self.data.get("features", {}).get(name)
 
-
-# --- multi-user bot class ---
+# ==========================================
+# 3. SELF-BOT ENGINE
+# ==========================================
 class ChrmInstance(commands.Bot):
     def __init__(self, user_id, token, user_config_data):
         super().__init__(command_prefix=".", self_bot=True, help_command=None)
@@ -34,83 +52,70 @@ class ChrmInstance(commands.Bot):
         self.config = ConfigManager(user_config_data)
 
     async def human_delay(self):
-        settings = self.config.data["settings"]
+        settings = self.config.data.get("settings", {})
         if settings.get("delays_enabled", True):
             min_d = settings.get("delay_min", 1.5)
             max_d = settings.get("delay_max", 4.5)
             await asyncio.sleep(random.uniform(min_d, max_d))
 
     async def setup_hook(self):
-        # load plugins
-        for filename in os.listdir('./plugins'):
-            if filename.endswith('.py') and not filename.startswith('__'):
-                try:
-                    await self.load_extension(f'plugins.{filename[:-3]}')
-                except Exception as e:
-                    print(f"[-] failed to load {filename} for {self.user_id}: {e}")
+        if os.path.exists('./plugins'):
+            for filename in os.listdir('./plugins'):
+                if filename.endswith('.py') and not filename.startswith('__'):
+                    try:
+                        await self.load_extension(f'plugins.{filename[:-3]}')
+                        print(f"[+] loaded plugin: {filename}")
+                    except Exception as e:
+                        print(f"[-] failed to load {filename}: {e}")
 
     async def on_ready(self):
-        print(f"logged in as {self.user.name} (user id: {self.user_id})")
+        print(f"✅ logged in as {self.user.name} (id: {self.user_id})")
 
     async def on_command_error(self, ctx, error):
-        error_emoji = self.config.get_emoji("error")
         if isinstance(error, commands.CommandNotFound):
             return
+        error_emoji = self.config.get_emoji("error")
         await ctx.send(f"{error_emoji} error: {str(error).lower()}")
 
-
-# --- mock database (replace this with neon db fetch later) ---
-MOCK_USERS = [
-    {
-        "discord_id": "123456789",
-        # in production, this is your encrypted token string
-        # for local testing right now, put your plain token in .env as TEST_TOKEN
-        "encrypted_token": "mock_encrypted_token_here", 
-        "settings": {
-            "features": {
-                "afk": {"enabled": False, "message": "afk"}
-            }
-        }
-    }
-]
-
-
-async def start_bot_for_user(user_data):
-    # 1. decrypt token
-    # if testing locally, we bypass decryption if the token starts with "mock_"
-    if user_data["encrypted_token"].startswith("mock_"):
-        token = os.environ.get("TEST_TOKEN") 
-    else:
-        token = decrypt_token(user_data["encrypted_token"])
-
+# ==========================================
+# 4. MAIN EXECUTION
+# ==========================================
+async def start_bot():
+    global bot_instance
+    token = os.environ.get("TEST_TOKEN")
+    
     if not token:
-        print(f"no token found for {user_data['discord_id']}")
+        print("❌ CRITICAL: 'TEST_TOKEN' environment variable is missing!")
         return
 
-    # 2. spin up instance
-    bot = ChrmInstance(
-        user_id=user_data["discord_id"], 
-        token=token, 
-        user_config_data=user_data["settings"]
-    )
-    
-    # 3. start it
     try:
-        await bot.start(token)
-    except Exception as e:
-        print(f"bot {user_data['discord_id']} crashed: {e}")
-
+        bot_instance = ChrmInstance("test_user", token, {})
+        await bot_instance.start(token)
+    except discord.LoginFailure:
+        print("❌ CRITICAL: The Discord token is invalid or expired.")
+    except Exception:
+        print("❌ CRITICAL: The bot crashed.")
+        traceback.print_exc()
 
 async def main():
-    tasks = []
-    # 1. fetch all users from db (mocked here)
-    for user in MOCK_USERS:
-        tasks.append(start_bot_for_user(user))
+    # 1. START WEB SERVER FIRST
+    port = int(os.environ.get("PORT", 8080))
+    config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
+    server = uvicorn.Server(config)
     
-    # 2. run all bots concurrently
-    print("starting chrm worker engine...")
-    await asyncio.gather(*tasks)
-
+    print(f"🌐 starting web server on port {port}...")
+    # Start the server as a background task
+    server_task = asyncio.create_task(server.serve())
+    
+    # Give render 3 seconds to see the port so it doesn't kill us
+    await asyncio.sleep(3)
+    
+    # 2. START BOT
+    print("🤖 starting chrm selfbot engine...")
+    bot_task = asyncio.create_task(start_bot())
+    
+    # Keep both running forever
+    await asyncio.gather(server_task, bot_task)
 
 if __name__ == "__main__":
     asyncio.run(main())
