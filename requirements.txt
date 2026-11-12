@@ -1,0 +1,23 @@
+# core bot & web
+discord.py-self
+fastapi
+uvicorn
+python-dotenv
+
+# database (neon)
+asyncpg
+sqlalchemy
+
+# security & encryption (crucial for user tokens)
+cryptography
+python-jose[cryptography] 
+
+# networking & auth (for discord oauth2)
+httpx
+
+# background tasks (for status rotators & schedulers)
+apscheduler
+
+# extras (ai & lyrics)
+openai
+syncedlyrics
