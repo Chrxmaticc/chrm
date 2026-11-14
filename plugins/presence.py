@@ -1,106 +1,96 @@
 import discord
 from discord.ext import commands, tasks
 import itertools
+from datetime import datetime
 
 class Presence(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         
-        # Ensure the feature exists in config safely
+        # Ensure features exist in config
         if "features" not in self.bot.config.data:
             self.bot.config.data["features"] = {}
         if "status_rotator" not in self.bot.config.data["features"]:
             self.bot.config.data["features"]["status_rotator"] = {
-                "enabled": True,
+                "enabled": False, # PERMANENTLY OFF BY DEFAULT
                 "statuses": ["chrm on top", "vibing", "afk", "learning python"]
             }
 
         self.statuses = itertools.cycle(self.bot.config.data["features"]["status_rotator"]["statuses"])
-        self.rotate_status.start()
+        self.rotate_task = None
+        
+        # Only start the loop if explicitly enabled
+        if self.bot.config.data["features"]["status_rotator"].get("enabled", False):
+            self.rotate_task = self.rotate_status.start()
 
     def cog_unload(self):
-        self.rotate_status.cancel()
+        if self.rotate_task:
+            self.rotate_task.cancel()
 
     @tasks.loop(seconds=60)
     async def rotate_status(self):
-        # Check if the user disabled the rotator OR if they have a locked presence
-        if not self.bot.config.data["features"]["status_rotator"].get("enabled", True):
-            return
-            
         if self.bot.is_ready() and not getattr(self.bot, 'locked_presence', False):
             current = next(self.statuses)
             await self.bot.change_presence(activity=discord.CustomActivity(name=current))
 
-    @rotate_status.before_loop
-    async def before_rotate(self):
-        await self.bot.wait_until_ready()
-
     @commands.command()
     async def togglerotator(self, ctx):
-        """turns the automatic status rotator on or off"""
-        current = self.bot.config.data["features"]["status_rotator"].get("enabled", True)
-        self.bot.config.data["features"]["status_rotator"]["enabled"] = not current
+        """turns the rotator on or off"""
+        current = self.bot.config.data["features"]["status_rotator"].get("enabled", False)
+        new_state = not current
+        self.bot.config.data["features"]["status_rotator"]["enabled"] = new_state
         
         emoji = self.bot.config.get_emoji("success")
-        state = "ON" if not current else "OFF"
         
-        if not current:
-            self.statuses = itertools.cycle(self.bot.config.data["features"]["status_rotator"]["statuses"])
-            
-        await ctx.send(f"{emoji} status rotator is now **{state}**.")
-
-    @commands.command()
-    async def addstatus(self, ctx, *, status: str):
-        """adds a custom status to the rotator. usage: .addstatus sipping tea"""
-        self.bot.config.data["features"]["status_rotator"]["statuses"].append(status)
-        self.statuses = itertools.cycle(self.bot.config.data["features"]["status_rotator"]["statuses"])
-        
-        emoji = self.bot.config.get_emoji("success")
-        await ctx.send(f"{emoji} added `{status}` to the status rotator.")
-
-    @commands.command()
-    async def clearstatuses(self, ctx):
-        """clears all custom statuses and resets to default"""
-        self.bot.config.data["features"]["status_rotator"]["statuses"] = ["chrm on top", "vibing"]
-        self.statuses = itertools.cycle(self.bot.config.data["features"]["status_rotator"]["statuses"])
-        
-        emoji = self.bot.config.get_emoji("success")
-        await ctx.send(f"{emoji} status rotator list reset.")
+        if new_state:
+            if not self.rotate_status.is_running():
+                self.rotate_status.start()
+            await ctx.send(f"{emoji} status rotator is now **ON**.")
+        else:
+            if self.rotate_status.is_running():
+                self.rotate_status.cancel()
+            await ctx.send(f"{emoji} status rotator is now **OFF**.")
 
     @commands.command()
     async def rpc(self, ctx, activity_type: str, *, args):
         """
-        advanced rpc. 
-        usage: .rpc playing name | details | state | image_url
-        usage for streaming: .rpc streaming title | url
+        advanced rpc. attach an image to the command to use it!
+        usage: .rpc playing name | details | state | large_img_url | small_img_url | elapsed
         """
         activity_type = activity_type.lower()
-        
-        # Parse the arguments
         parts = [p.strip() for p in args.split("|")]
         name = parts[0] if len(parts) > 0 else "chrm"
 
-        # Special handler for Streaming (requires a URL)
+        error_emoji = self.bot.config.get_emoji("error")
+        success_emoji = self.bot.config.get_emoji("success")
+
+        # Handle Elapsed Timer by removing it from the parts list
+        timestamps = None
+        if len(parts) > 0 and parts[-1].lower() == "elapsed":
+            timestamps = {"start": int(datetime.now().timestamp())}
+            parts.pop() # Remove 'elapsed' so it doesn't mess up image parsing
+
+        # Check for attached files (camera roll/image uploads)
+        large_img = None
+        if ctx.message.attachments:
+            large_img = ctx.message.attachments[0].url
+        elif len(parts) > 3 and parts[3]:
+            large_img = parts[3]
+
+        # Streaming Handler
         if activity_type in ["streaming", "stream"]:
             if len(parts) < 2:
-                error = self.bot.config.get_emoji("error")
-                return await ctx.send(f"{error} streaming requires a url. usage: `.rpc streaming title | url`")
-            
+                return await ctx.send(f"{error_emoji} streaming requires a url. usage: `.rpc streaming title | url`")
             url = parts[1]
-            if not url.startswith("http"):
-                error = self.bot.config.get_emoji("error")
-                return await ctx.send(f"{error} url must start with http or https.")
-
             try:
                 self.bot.locked_presence = True
                 await self.bot.change_presence(activity=discord.Streaming(name=name, url=url))
-                emoji = self.bot.config.get_emoji("success")
-                await ctx.send(f"{emoji} now streaming: **{name}** at {url}")
+                await ctx.send(f"{success_emoji} now streaming: **{name}** at {url}")
             except Exception as e:
-                await ctx.send(f"error: {e}")
+                await ctx.send(f"{error_emoji} error: {e}")
             return
 
-        # Standard RPC handler
+        # Standard RPC Handler
         types = {
             "playing": discord.ActivityType.playing,
             "watching": discord.ActivityType.watching,
@@ -109,18 +99,22 @@ class Presence(commands.Cog):
         }
         
         if activity_type not in types:
-            error = self.bot.config.get_emoji("error")
-            return await ctx.send(f"{error} invalid type. use playing, watching, listening, competing, or streaming.")
+            return await ctx.send(f"{error_emoji} invalid type. use playing, watching, listening, competing, or streaming.")
 
-        details = parts[1] if len(parts) > 1 else None
-        state = parts[2] if len(parts) > 2 else None
-        image_url = parts[3] if len(parts) > 3 else None
+        details = parts[1] if len(parts) > 1 and parts[1] else None
+        state = parts[2] if len(parts) > 2 and parts[2] else None
+        small_img = parts[4] if len(parts) > 4 and parts[4] else None
 
+        # Build assets
         assets = {}
-        if image_url:
-            assets["large_image"] = image_url
+        if large_img:
+            assets["large_image"] = large_img
             if details:
                 assets["large_text"] = details
+        if small_img:
+            assets["small_image"] = small_img
+            if state:
+                assets["small_text"] = state
 
         try:
             self.bot.locked_presence = True
@@ -129,25 +123,20 @@ class Presence(commands.Cog):
                 name=name,
                 details=details,
                 state=state,
-                assets=assets if assets else None
+                assets=assets if assets else None,
+                timestamps=timestamps
             ))
-            emoji = self.bot.config.get_emoji("success")
-            await ctx.send(f"{emoji} rpc updated: {activity_type} **{name}**")
+            await ctx.send(f"{success_emoji} rpc updated: {activity_type} **{name}**")
         except Exception as e:
-            await ctx.send(f"error: {e}")
-
-    @commands.command()
-    async def customstatus(self, ctx, *, text):
-        self.bot.locked_presence = True
-        await self.bot.change_presence(activity=discord.CustomActivity(name=text))
-        emoji = self.bot.config.get_emoji("success")
-        await ctx.send(f"{emoji} custom status set: {text}")
+            await ctx.send(f"{error_emoji} error: {e}")
 
     @commands.command()
     async def clearstatus(self, ctx):
+        """forcefully wipes the active rpc"""
         self.bot.locked_presence = False
+        await self.bot.change_presence(activity=None)
         emoji = self.bot.config.get_emoji("success")
-        await ctx.send(f"{emoji} presence cleared. rotator will take over.")
+        await ctx.send(f"{emoji} rpc forcefully cleared.")
 
 async def setup(bot):
     await bot.add_cog(Presence(bot))
