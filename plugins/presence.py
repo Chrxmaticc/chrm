@@ -3,27 +3,6 @@ from discord.ext import commands
 from datetime import datetime
 import asyncio
 import re
-import hashlib
-
-# Helper to fix invisible images on user RPCs
-def format_image_url(url):
-    if not url:
-        return None
-    # If it's already a special asset (like spotify or a proxy link), leave it
-    if url.startswith("mp:") or url.startswith("spotify:"):
-        return url
-        
-    # If it's a Discord attachment, strip the tracking parameters (Discord RPC hates them)
-    if "cdn.discordapp.com" in url or "media.discordapp.net" in url:
-        return url.split("?")[0]
-        
-    # If it's an external link (Imgur, etc.), format it into Discord's proxy format
-    if url.startswith("http"):
-        url_hash = hashlib.md5(url.encode()).hexdigest()
-        clean_url = url.replace("https://", "").replace("http://", "")
-        return f"mp:external/{url_hash}/https/{clean_url}"
-        
-    return url
 
 class Presence(commands.Cog):
     def __init__(self, bot):
@@ -54,11 +33,11 @@ class Presence(commands.Cog):
         
         assets = {}
         if self.current_large_img:
-            assets["large_image"] = format_image_url(self.current_large_img)
+            assets["large_image"] = self.current_large_img
             if self.current_details:
                 assets["large_text"] = self.current_details
         if self.current_small_img:
-            assets["small_image"] = format_image_url(self.current_small_img)
+            assets["small_image"] = self.current_small_img
             if self.current_state:
                 assets["small_text"] = self.current_state
 
@@ -90,15 +69,11 @@ class Presence(commands.Cog):
             self.current_elapsed = True
             parts.pop()
 
-        if ctx.message.attachments:
-            self.current_large_img = ctx.message.attachments[0].url
-        elif len(parts) > 3 and parts[3]:
-            self.current_large_img = parts[3]
-        else:
-            self.current_large_img = None
-
         self.current_details = parts[1] if len(parts) > 1 and parts[1] else None
         self.current_state = parts[2] if len(parts) > 2 and parts[2] else None
+        
+        # We removed attachments because Discord blocks them now
+        self.current_large_img = parts[3] if len(parts) > 3 and parts[3] else None
         self.current_small_img = parts[4] if len(parts) > 4 and parts[4] else None
 
         if self.current_activity_type in ["streaming", "stream"]:
@@ -115,28 +90,28 @@ class Presence(commands.Cog):
             await ctx.send(f"{self.bot.config.get_emoji('error')} error: {e}")
 
     @commands.command()
-    async def iconplay(self, ctx, url: str = None):
-        """changes ONLY the large icon. usage: .iconplay <url> (or attach an image)"""
-        if ctx.message.attachments:
-            url = ctx.message.attachments[0].url
-        if not url:
-            return await ctx.send(f"{self.bot.config.get_emoji('error')} provide a url or attach an image.")
+    async def iconplay(self, ctx, app_id: str = None):
+        """
+        Changes the large icon using an Application ID (URLs don't work anymore).
+        usage: .iconplay <app_id>
+        """
+        if not app_id:
+            return await ctx.send(f"{self.bot.config.get_emoji('error')} provide an application id.")
         
-        self.current_large_img = url
+        # Discord requires application assets to be formatted as app_assets
+        self.current_large_img = f"app_assets:{app_id}"
         await self._update_presence()
-        await ctx.send(f"{self.bot.config.get_emoji('success')} large icon updated.")
+        await ctx.send(f"{self.bot.config.get_emoji('success')} large icon updated via app id.")
 
     @commands.command()
-    async def smalliconplay(self, ctx, url: str = None):
-        """changes ONLY the small icon. usage: .smalliconplay <url> (or attach an image)"""
-        if ctx.message.attachments:
-            url = ctx.message.attachments[0].url
-        if not url:
-            return await ctx.send(f"{self.bot.config.get_emoji('error')} provide a url or attach an image.")
+    async def smalliconplay(self, ctx, app_id: str = None):
+        """Changes the small icon using an Application ID. usage: .smalliconplay <app_id>"""
+        if not app_id:
+            return await ctx.send(f"{self.bot.config.get_emoji('error')} provide an application id.")
         
-        self.current_small_img = url
+        self.current_small_img = f"app_assets:{app_id}"
         await self._update_presence()
-        await ctx.send(f"{self.bot.config.get_emoji('success')} small icon updated.")
+        await ctx.send(f"{self.bot.config.get_emoji('success')} small icon updated via app id.")
 
     @commands.command()
     async def clearstatus(self, ctx):
