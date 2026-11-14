@@ -220,5 +220,7 @@ __marimo__/
 .streamlit/secrets.toml
 
 # ENV
-.env 
+.env
 .toml
+
+mock_api.py

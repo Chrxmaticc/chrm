@@ -8,6 +8,13 @@ import aiohttp
 import discord
 from discord.ext import commands
 
+# load .env before anything reads os.environ
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 # ==========================================
 # 1. WEB SERVER FOR RENDER
 # ==========================================
@@ -24,7 +31,11 @@ class SimpleHandler(BaseHTTPRequestHandler):
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(('0.0.0.0', port), SimpleHandler)
+    try:
+        server = HTTPServer(('0.0.0.0', port), SimpleHandler)
+    except OSError as e:
+        print(f"⚠️  health web server could not bind :{port} ({e}); continuing without it")
+        return
     print(f"🌐 Web server running on port {port}")
     server.serve_forever()
 
@@ -34,7 +45,14 @@ threading.Thread(target=run_web_server, daemon=True).start()
 # 2. ENGINE SETUP
 # ==========================================
 API_URL = os.environ.get("API_URL")
-ENGINE_SECRET = os.environ.get("ENGINE_SECRET")
+ENGINE_SECRET = os.environ.get("ENGINE_SECRET", "fallback_secret_123")
+
+if not API_URL:
+    raise SystemExit("API_URL is not set (e.g. API_URL=http://127.0.0.1:8080 or your render api base)")
+
+# normalize: accept either the full /api/engine/bots url or the bare origin
+if not API_URL.rstrip("/").endswith("/engine/bots"):
+    API_URL = API_URL.rstrip("/") + "/api/engine/bots"
 
 # Tracks running bots { discord_id: bot_instance }
 running_bots = {}
@@ -73,6 +91,7 @@ class ChrmInstance(commands.Bot):
 # ==========================================
 async def sync_loop():
     """Runs every 30 seconds to check dashboard changes."""
+    print(f"🔗 polling engine api: {API_URL}")
     while True:
         headers = {"x-engine-secret": ENGINE_SECRET}
         try:
