@@ -1,55 +1,17 @@
 import discord
-from discord.ext import commands, tasks
-import itertools
+from discord.ext import commands
 from datetime import datetime
+import asyncio
+import re
 
 class Presence(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        
-        # Ensure features exist in config
-        if "features" not in self.bot.config.data:
-            self.bot.config.data["features"] = {}
-        if "status_rotator" not in self.bot.config.data["features"]:
-            self.bot.config.data["features"]["status_rotator"] = {
-                "enabled": False, # PERMANENTLY OFF BY DEFAULT
-                "statuses": ["chrm on top", "vibing", "afk", "learning python"]
-            }
-
-        self.statuses = itertools.cycle(self.bot.config.data["features"]["status_rotator"]["statuses"])
-        self.rotate_task = None
-        
-        # Only start the loop if explicitly enabled
-        if self.bot.config.data["features"]["status_rotator"].get("enabled", False):
-            self.rotate_task = self.rotate_status.start()
+        self.custom_rotator_task = None
 
     def cog_unload(self):
-        if self.rotate_task:
-            self.rotate_task.cancel()
-
-    @tasks.loop(seconds=60)
-    async def rotate_status(self):
-        if self.bot.is_ready() and not getattr(self.bot, 'locked_presence', False):
-            current = next(self.statuses)
-            await self.bot.change_presence(activity=discord.CustomActivity(name=current))
-
-    @commands.command()
-    async def togglerotator(self, ctx):
-        """turns the rotator on or off"""
-        current = self.bot.config.data["features"]["status_rotator"].get("enabled", False)
-        new_state = not current
-        self.bot.config.data["features"]["status_rotator"]["enabled"] = new_state
-        
-        emoji = self.bot.config.get_emoji("success")
-        
-        if new_state:
-            if not self.rotate_status.is_running():
-                self.rotate_status.start()
-            await ctx.send(f"{emoji} status rotator is now **ON**.")
-        else:
-            if self.rotate_status.is_running():
-                self.rotate_status.cancel()
-            await ctx.send(f"{emoji} status rotator is now **OFF**.")
+        if self.custom_rotator_task and not self.custom_rotator_task.done():
+            self.custom_rotator_task.cancel()
 
     @commands.command()
     async def rpc(self, ctx, activity_type: str, *, args):
@@ -64,7 +26,7 @@ class Presence(commands.Cog):
         error_emoji = self.bot.config.get_emoji("error")
         success_emoji = self.bot.config.get_emoji("success")
 
-        # Handle Elapsed Timer by removing it from the parts list
+        # Handle Elapsed Timer
         timestamps = None
         if len(parts) > 0 and parts[-1].lower() == "elapsed":
             timestamps = {"start": int(datetime.now().timestamp())}
@@ -131,12 +93,88 @@ class Presence(commands.Cog):
             await ctx.send(f"{error_emoji} error: {e}")
 
     @commands.command()
+    async def customstatus(self, ctx, *, text):
+        """sets a custom text status"""
+        self.bot.locked_presence = True
+        await self.bot.change_presence(activity=discord.CustomActivity(name=text))
+        emoji = self.bot.config.get_emoji("success")
+        await ctx.send(f"{emoji} custom status set to: {text}")
+
+    @commands.command()
     async def clearstatus(self, ctx):
-        """forcefully wipes the active rpc"""
+        """forcefully wipes the active rpc and stops any rotator"""
         self.bot.locked_presence = False
+        
+        # Stop the custom rotator if it's running
+        if self.custom_rotator_task and not self.custom_rotator_task.done():
+            self.custom_rotator_task.cancel()
+            
         await self.bot.change_presence(activity=None)
         emoji = self.bot.config.get_emoji("success")
-        await ctx.send(f"{emoji} rpc forcefully cleared.")
+        await ctx.send(f"{emoji} presence completely wiped.")
+
+    # ==========================================
+    # MANUAL STATUS ROTATOR (Only runs if they ask)
+    # ==========================================
+    
+    @commands.command()
+    async def startrotator(self, ctx, *, args):
+        """
+        starts a custom status rotator for this session.
+        usage: .startrotator status1, status2, status3 | 10m
+        example: .startrotator grinding, in the trenches, vibing | 5m
+        """
+        error_emoji = self.bot.config.get_emoji("error")
+        
+        # Parse the interval from the end (e.g., 10m, 5s, 2h)
+        match = re.search(r'\|\s*(\d+)([smh])$', args)
+        if not match:
+            return await ctx.send(f"{error_emoji} missing time. usage: `.startrotator status1, status2 | 5m`")
+
+        amount = int(match.group(1))
+        unit = match.group(2)
+        multiplier = {'s': 1, 'm': 60, 'h': 3600}
+        total_seconds = amount * multiplier[unit]
+
+        # Extract statuses
+        statuses_str = args[:match.start()].strip()
+        statuses = [s.strip() for s in statuses_str.split(",") if s.strip()]
+
+        if not statuses:
+            return await ctx.send(f"{error_emoji} no statuses provided.")
+
+        if self.custom_rotator_task and not self.custom_rotator_task.done():
+            self.custom_rotator_task.cancel()
+
+        self.bot.locked_presence = True
+        self.custom_rotator_task = asyncio.create_task(self._run_custom_rotator(statuses, total_seconds))
+        
+        success_emoji = self.bot.config.get_emoji("success")
+        await ctx.send(f"{success_emoji} custom rotator started with {len(statuses)} statuses every {amount}{unit}.")
+
+    async def _run_custom_rotator(self, statuses, interval):
+        try:
+            index = 0
+            while True:
+                current = statuses[index % len(statuses)]
+                await self.bot.change_presence(activity=discord.CustomActivity(name=current))
+                index += 1
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            pass
+
+    @commands.command()
+    async def stoprotator(self, ctx):
+        """stops the custom status rotator"""
+        if self.custom_rotator_task and not self.custom_rotator_task.done():
+            self.custom_rotator_task.cancel()
+            self.bot.locked_presence = False
+            await self.bot.change_presence(activity=None)
+            emoji = self.bot.config.get_emoji("success")
+            await ctx.send(f"{emoji} custom rotator stopped.")
+        else:
+            error = self.bot.config.get_emoji("error")
+            await ctx.send(f"{error} no rotator is currently running.")
 
 async def setup(bot):
     await bot.add_cog(Presence(bot))
