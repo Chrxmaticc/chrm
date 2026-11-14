@@ -67,7 +67,7 @@ class Help(commands.Cog):
         embed.set_footer(text="chrm on top.")
         
         # FIXED: using embeds=[embed] instead of embed=embed
-        await ctx.send(embeds=[embed])
+        await ctx.send(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(Help(bot))
