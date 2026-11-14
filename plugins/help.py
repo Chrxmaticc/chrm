@@ -8,68 +8,66 @@ class Help(commands.Cog):
     @commands.command(name="help")
     async def help_command(self, ctx):
         prefix = self.bot.command_prefix
-        
+        if isinstance(prefix, list):
+            prefix_str = prefix[0] # Just show the first prefix
+        else:
+            prefix_str = prefix
+
         embed = discord.Embed(
             title="chrm selfbot commands",
-            description=f"prefix: `{prefix}` | all commands are lowercase",
+            description=f"main prefix: `{prefix_str}` | all commands lowercase",
             color=0x2b2d31
         )
         
         embed.add_field(
             name="automation",
             value=(
-                f"`{prefix}addrespond <trigger> <response>`\n"
-                f"`{prefix}addreact <trigger> <emoji>`\n"
-                f"`{prefix}afk <message>`\n"
-                f"`{prefix}unafk`\n"
-                f"`{prefix}delay <seconds>`\n"
-                f"`{prefix}toggledelay`\n"
-                f"`{prefix}prefix <new_prefix>`"
+                f"`{prefix_str}addrespond <trigger> <response>`\n"
+                f"`{prefix_str}addreact <trigger> <emoji>`\n"
+                f"`{prefix_str}afk <message>` / `{prefix_str}unafk`\n"
+                f"`{prefix_str}delay <seconds>` / `{prefix_str}toggledelay`\n"
+                f"`{prefix_str}prefix` / `{prefix_str}addprefix` / `{prefix_str}removeprefix`"
             ),
             inline=False
         )
         
         embed.add_field(
-            name="utility",
+            name="presence & rpc",
             value=(
-                f"`{prefix}purge <amount>`\n"
-                f"`{prefix}blacktea`\n"
-                f"`{prefix}snipe`"
+                f"`{prefix_str}rpc <type> <name> | <details> | <state> | <large_img> | <small_img> | elapsed`\n"
+                f"`{prefix_str}stream <url> <title>`\n"
+                f"`{prefix_str}customstatus <text>`\n"
+                f"`{prefix_str}clearstatus` - wipe rpc\n"
+                f"`{prefix_str}togglerotator` / `{prefix_str}addstatus`"
             ),
             inline=False
         )
         
         embed.add_field(
-            name="presence",
+            name="utility & sniping",
             value=(
-                f"`{prefix}rpc <playing/watching/listening> <text>`\n"
-                f"`{prefix}stream <url> <text>`\n"
-                f"`{prefix}customstatus <text>`\n"
-                f"`{prefix}clearstatus`"
+                f"`{prefix_str}purge <amount>`\n"
+                f"`{prefix_str}blacktea`\n"
+                f"`{prefix_str}snipe` / `{prefix_str}editsnipe`\n"
+                f"`{prefix_str}userinfo [@user]` / `{prefix_str}avatar [@user]`"
             ),
             inline=False
         )
-        
+
         embed.add_field(
-            name="music",
+            name="music & games",
             value=(
-                f"`{prefix}lyrics <song name>`\n"
-                f"`{prefix}stoplyrics`"
-            ),
-            inline=False
-        )
-        
-        embed.add_field(
-            name="ai",
-            value=(
-                f"`{prefix}ai <prompt>`\n"
-                f"`{prefix}image <prompt>`"
+                f"`{prefix_str}lyrics <song>` / `{prefix_str}stoplyrics`\n"
+                f"`{prefix_str}fakeplay <game>` / `{prefix_str}stopfakeplay`\n"
+                f"`{prefix_str}spotify <song> - <artist>` / `{prefix_str}stopspotify`"
             ),
             inline=False
         )
 
         embed.set_footer(text="chrm on top.")
-        await ctx.send(embed=embed)
+        
+        # FIXED: using embeds=[embed] instead of embed=embed
+        await ctx.send(embeds=[embed])
 
 async def setup(bot):
     await bot.add_cog(Help(bot))
