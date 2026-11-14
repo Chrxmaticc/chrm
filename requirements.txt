@@ -1,5 +1,6 @@
 # core bot & web
 discord.py-self
+aiohttp
 fastapi
 uvicorn
 python-dotenv
