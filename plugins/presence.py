@@ -3,12 +3,32 @@ from discord.ext import commands
 from datetime import datetime
 import asyncio
 import re
+import hashlib
+
+# Helper to fix invisible images on user RPCs
+def format_image_url(url):
+    if not url:
+        return None
+    # If it's already a special asset (like spotify or a proxy link), leave it
+    if url.startswith("mp:") or url.startswith("spotify:"):
+        return url
+        
+    # If it's a Discord attachment, strip the tracking parameters (Discord RPC hates them)
+    if "cdn.discordapp.com" in url or "media.discordapp.net" in url:
+        return url.split("?")[0]
+        
+    # If it's an external link (Imgur, etc.), format it into Discord's proxy format
+    if url.startswith("http"):
+        url_hash = hashlib.md5(url.encode()).hexdigest()
+        clean_url = url.replace("https://", "").replace("http://", "")
+        return f"mp:external/{url_hash}/https/{clean_url}"
+        
+    return url
 
 class Presence(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.custom_rotator_task = None
-        # Store the current RPC state so we can edit icons independently
         self.current_activity_type = None
         self.current_name = None
         self.current_details = None
@@ -22,7 +42,6 @@ class Presence(commands.Cog):
             self.custom_rotator_task.cancel()
 
     async def _update_presence(self):
-        """Internal helper to apply the current saved state"""
         if not self.current_activity_type:
             return
             
@@ -35,11 +54,11 @@ class Presence(commands.Cog):
         
         assets = {}
         if self.current_large_img:
-            assets["large_image"] = self.current_large_img
+            assets["large_image"] = format_image_url(self.current_large_img)
             if self.current_details:
                 assets["large_text"] = self.current_details
         if self.current_small_img:
-            assets["small_image"] = self.current_small_img
+            assets["small_image"] = format_image_url(self.current_small_img)
             if self.current_state:
                 assets["small_text"] = self.current_state
 
