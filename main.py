@@ -8,6 +8,7 @@ import threading
 import aiohttp
 import discord
 from discord.ext import commands
+from datetime import datetime
 
 # ==========================================
 # 1. WEB SERVER FOR RENDER (Starts instantly)
@@ -68,12 +69,14 @@ class ConfigManager:
 # ==========================================
 class ChrmInstance(commands.Bot):
     def __init__(self, user_id, token, user_config_data):
-        # Dynamic prefixes
         prefixes = user_config_data.get("settings", {}).get("prefixes", [".", ",", "?"])
         if "." not in prefixes:
             prefixes.append(".")
             
-        super().__init__(command_prefix=prefixes, self_bot=True, help_command=None)
+        # Get the device platform from DB, default to windows
+        platform = user_config_data.get("settings", {}).get("device_platform", "windows")
+            
+        super().__init__(command_prefix=prefixes, self_bot=True, help_command=None, platform=platform)
         
         self.user_id = user_id
         self.token = token
@@ -87,9 +90,10 @@ class ChrmInstance(commands.Bot):
             max_d = settings.get("delay_max", 4.5)
             await asyncio.sleep(random.uniform(min_d, max_d))
 
-    @commands.Bot.before_invoke
-    async def before_any_command(self, ctx):
+    async def invoke(self, ctx):
+        """This runs BEFORE every command automatically."""
         await self.human_delay()
+        await super().invoke(ctx)
 
     async def setup_hook(self):
         if os.path.exists('./plugins'):
@@ -102,7 +106,7 @@ class ChrmInstance(commands.Bot):
                         print(f"[-] failed to load {filename}: {e}")
 
     async def on_ready(self):
-        print(f"✅ logged in as {self.user.name} (id: {self.user_id})")
+        print(f"✅ logged in as {self.user.name} (id: {self.user_id}) [{self.ws.platform}]")
         
         # Apply RPC on initial login if it exists in settings
         await self.apply_dashboard_rpc(self.config.data.get("settings", {}))
@@ -123,13 +127,18 @@ class ChrmInstance(commands.Bot):
                     if rpc_data.get("details"):
                         assets["large_text"] = rpc_data["details"]
 
+                timestamps = None
+                if rpc_data.get("elapsed"):
+                    timestamps = {"start": int(datetime.now().timestamp())}
+
                 self.locked_presence = True
                 await self.change_presence(activity=discord.Activity(
                     type=types.get(rpc_data["type"], discord.ActivityType.playing),
                     name=rpc_data["name"],
                     details=rpc_data.get("details"),
                     state=rpc_data.get("state"),
-                    assets=assets if assets else None
+                    assets=assets if assets else None,
+                    timestamps=timestamps
                 ))
                 print(f"✅ Applied dashboard RPC for {self.user_id}")
             except Exception as e:
@@ -150,6 +159,7 @@ class ChrmInstance(commands.Bot):
 API_URL = os.environ.get("API_URL")
 ENGINE_SECRET = os.environ.get("ENGINE_SECRET")
 
+# Tracks running bots { discord_id: bot_instance }
 running_bots = {}
 
 async def fetch_users_from_api():
@@ -203,21 +213,23 @@ async def sync_loop():
         users = await fetch_users_from_api()
         
         if users:
-            print(f"👥 Found {len(users)} users in database.")
-            
             for user in users:
                 uid = user["discord_id"]
                 is_active = user["is_active"]
                 settings = user["settings"]
 
-                # 1. Stop bot if disabled
+                # 1. Cleanup dead instances (e.g., from .device restart)
+                if uid in running_bots and running_bots[uid].is_closed():
+                    del running_bots[uid]
+
+                # 2. Stop bot if disabled
                 if not is_active and uid in running_bots:
                     print(f"🛑 stopping bot for {uid}")
                     await running_bots[uid].close()
                     del running_bots[uid]
                     continue
 
-                # 2. Start bot if enabled
+                # 3. Start bot if enabled
                 if is_active and uid not in running_bots:
                     print(f"🚀 starting bot for {uid}...")
                     bot = ChrmInstance(uid, user["token"], user)
@@ -225,7 +237,7 @@ async def sync_loop():
                     asyncio.create_task(start_bot_for_user(user))
                     continue
 
-                # 3. Apply setting changes (RPC, prefixes, etc.)
+                # 4. Apply setting changes (RPC, prefixes, etc.)
                 if is_active and uid in running_bots:
                     bot = running_bots[uid]
                     if bot.config.data != user:
