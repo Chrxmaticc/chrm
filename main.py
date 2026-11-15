@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 import traceback
+import random
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
 import aiohttp
@@ -24,7 +25,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def log_message(self, format, *args):
-        pass # Silence logs to prevent spam
+        pass # Silence logs
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
@@ -42,13 +43,14 @@ class ConfigManager:
         with open("config.json", "r") as f:
             self.data = json.load(f)
             
-        # Merge user specific settings
         if user_data:
             self.data.update(user_data)
             
-        # Bulletproofing: Ensure dictionaries exist to prevent crashes
+        # Bulletproofing
         if "settings" not in self.data:
             self.data["settings"] = {}
+        if "prefixes" not in self.data["settings"]:
+            self.data["settings"]["prefixes"] = [".", ",", "?"]
         if "features" not in self.data:
             self.data["features"] = {}
         if "autorespond" not in self.data["features"]:
@@ -57,11 +59,6 @@ class ConfigManager:
             self.data["features"]["autoreact"] = {}
         if "afk" not in self.data["features"]:
             self.data["features"]["afk"] = {"enabled": False, "message": "afk"}
-        if "status_rotator" not in self.data["features"]:
-            self.data["features"]["status_rotator"] = {
-                "enabled": True,
-                "statuses": ["chrm on top", "vibing", "afk", "learning python"]
-            }
 
     def get_emoji(self, name):
         return self.data.get("emojis", {}).get(name, "")
@@ -71,10 +68,10 @@ class ConfigManager:
 # ==========================================
 class ChrmInstance(commands.Bot):
     def __init__(self, user_id, token, user_config_data):
-        # Handle Multiple Prefixes with Emergency Fallback
+        # Dynamic prefixes
         prefixes = user_config_data.get("settings", {}).get("prefixes", [".", ",", "?"])
         if "." not in prefixes:
-            prefixes.append(".") # Emergency fallback so they can always reset
+            prefixes.append(".")
             
         super().__init__(command_prefix=prefixes, self_bot=True, help_command=None)
         
@@ -90,8 +87,11 @@ class ChrmInstance(commands.Bot):
             max_d = settings.get("delay_max", 4.5)
             await asyncio.sleep(random.uniform(min_d, max_d))
 
+    @commands.Bot.before_invoke
+    async def before_any_command(self, ctx):
+        await self.human_delay()
+
     async def setup_hook(self):
-        # Load plugins
         if os.path.exists('./plugins'):
             for filename in os.listdir('./plugins'):
                 if filename.endswith('.py') and not filename.startswith('__'):
@@ -103,6 +103,37 @@ class ChrmInstance(commands.Bot):
 
     async def on_ready(self):
         print(f"✅ logged in as {self.user.name} (id: {self.user_id})")
+        
+        # Apply RPC on initial login if it exists in settings
+        await self.apply_dashboard_rpc(self.config.data.get("settings", {}))
+
+    async def apply_dashboard_rpc(self, settings):
+        rpc_data = settings.get("rpc")
+        if rpc_data and rpc_data.get("name"):
+            try:
+                types = {
+                    "playing": discord.ActivityType.playing,
+                    "watching": discord.ActivityType.watching,
+                    "listening": discord.ActivityType.listening,
+                    "competing": discord.ActivityType.competing
+                }
+                assets = {}
+                if rpc_data.get("image_url"):
+                    assets["large_image"] = rpc_data["image_url"]
+                    if rpc_data.get("details"):
+                        assets["large_text"] = rpc_data["details"]
+
+                self.locked_presence = True
+                await self.change_presence(activity=discord.Activity(
+                    type=types.get(rpc_data["type"], discord.ActivityType.playing),
+                    name=rpc_data["name"],
+                    details=rpc_data.get("details"),
+                    state=rpc_data.get("state"),
+                    assets=assets if assets else None
+                ))
+                print(f"✅ Applied dashboard RPC for {self.user_id}")
+            except Exception as e:
+                print(f"❌ Failed to apply RPC for {self.user_id}: {e}")
 
     async def on_command_error(self, ctx, error):
         if isinstance(error, commands.CommandNotFound):
@@ -119,7 +150,6 @@ class ChrmInstance(commands.Bot):
 API_URL = os.environ.get("API_URL")
 ENGINE_SECRET = os.environ.get("ENGINE_SECRET")
 
-# Tracks running bots { discord_id: bot_instance }
 running_bots = {}
 
 async def fetch_users_from_api():
@@ -167,50 +197,49 @@ async def start_bot_for_user(user_data):
         print(f"❌ Bot crashed for {user_data['discord_id']}: {e}")
 
 async def sync_loop():
-    """Runs every 30 seconds to check dashboard changes."""
     print("🤖 starting sync loop...")
     
     while True:
         users = await fetch_users_from_api()
         
-        if not users:
-            await asyncio.sleep(30)
-            continue
+        if users:
+            print(f"👥 Found {len(users)} users in database.")
+            
+            for user in users:
+                uid = user["discord_id"]
+                is_active = user["is_active"]
+                settings = user["settings"]
 
-        print(f"👥 Found {len(users)} users in database.")
-        
-        for user in users:
-            uid = user["discord_id"]
-            is_active = user["is_active"]
-            settings = user["settings"]
+                # 1. Stop bot if disabled
+                if not is_active and uid in running_bots:
+                    print(f"🛑 stopping bot for {uid}")
+                    await running_bots[uid].close()
+                    del running_bots[uid]
+                    continue
 
-            # 1. User turned bot OFF from dashboard
-            if not is_active and uid in running_bots:
-                print(f"🛑 stopping bot for {uid} (dashboard toggle)")
-                await running_bots[uid].close()
-                del running_bots[uid]
-                continue
+                # 2. Start bot if enabled
+                if is_active and uid not in running_bots:
+                    print(f"🚀 starting bot for {uid}...")
+                    bot = ChrmInstance(uid, user["token"], user)
+                    running_bots[uid] = bot
+                    asyncio.create_task(start_bot_for_user(user))
+                    continue
 
-            # 2. User turned bot ON from dashboard
-            if is_active and uid not in running_bots:
-                print(f"🚀 starting bot for {uid}...")
-                bot = ChrmInstance(uid, user["token"], user)
-                running_bots[uid] = bot
-                asyncio.create_task(start_bot_for_user(user))
-                continue
-
-            # 3. User is active, but changed settings (e.g., prefix, autorespond)
-            if is_active and uid in running_bots:
-                bot = running_bots[uid]
-                if bot.config.data != user:
-                    print(f"🔄 updated settings for {uid}")
-                    bot.config.data.update(user)
-                    
-                    # If prefixes changed, update them live
-                    new_prefixes = user.get("settings", {}).get("prefixes", [".", ",", "?"])
-                    if "." not in new_prefixes:
-                        new_prefixes.append(".")
-                    bot.command_prefix = new_prefixes
+                # 3. Apply setting changes (RPC, prefixes, etc.)
+                if is_active and uid in running_bots:
+                    bot = running_bots[uid]
+                    if bot.config.data != user:
+                        print(f"🔄 updated settings for {uid}")
+                        bot.config.data.update(user)
+                        
+                        # Update prefixes
+                        new_prefixes = user.get("settings", {}).get("prefixes", [".", ",", "?"])
+                        if "." not in new_prefixes:
+                            new_prefixes.append(".")
+                        bot.command_prefix = new_prefixes
+                        
+                        # Update RPC
+                        await bot.apply_dashboard_rpc(user.get("settings", {}))
 
         await asyncio.sleep(30)
 
@@ -221,5 +250,4 @@ async def main():
     await sync_loop()
 
 if __name__ == "__main__":
-    import random # imported here for the human_delay method
     asyncio.run(main())
