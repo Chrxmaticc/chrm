@@ -65,7 +65,7 @@ class ConfigManager:
         return self.data.get("emojis", {}).get(name, "")
 
 # ==========================================
-# 3. MULTI-USER BOT INSTANCE
+# 3. MULTI-USER BOT INSTANCE (VR SPOOF FIXED)
 # ==========================================
 class ChrmInstance(commands.Bot):
     def __init__(self, user_id, token, user_config_data):
@@ -75,13 +75,39 @@ class ChrmInstance(commands.Bot):
             
         # Get the device platform from DB, default to windows
         platform = user_config_data.get("settings", {}).get("device_platform", "windows")
+        
+        # Map 'oculus' to 'android' for the base library, we will patch the rest later
+        base_platform = "android" if platform == "oculus" else platform
             
-        super().__init__(command_prefix=prefixes, self_bot=True, help_command=None, platform=platform)
+        super().__init__(command_prefix=prefixes, self_bot=True, help_command=None, platform=base_platform)
         
         self.user_id = user_id
         self.token = token
         self.config = ConfigManager(user_config_data)
         self.locked_presence = False
+        self.actual_platform = platform # Store the real requested platform
+
+    async def before_identify_hook(self, shard_id, *, initial=False):
+        """Patch the gateway IDENTIFY packet to spoof Oculus VR if requested."""
+        await super().before_identify_hook(shard_id, initial=initial)
+        
+        if self.actual_platform == "oculus" and self.ws:
+            # Discord expects these specific properties for the Oculus client
+            self.ws._connection.properties = {
+                "$os": "android",
+                "$browser": "Discord Android",
+                "$device": "Oculus Quest",
+                "$system_locale": "en-US",
+                "$timezone": "America/New_York",
+                "client_version": "201.0",
+                "release_channel": "googleRelease",
+                "os_version": "12",
+                "device_vendor_id": "Oculus",
+                "device_model": "Quest 2",
+                "browser_user_agent": "Discord-Android/201000",
+                "browser_version": "201.0",
+                "os_sdk_version": "31"
+            }
 
     async def human_delay(self):
         settings = self.config.data.get("settings", {})
@@ -106,7 +132,7 @@ class ChrmInstance(commands.Bot):
                         print(f"[-] failed to load {filename}: {e}")
 
     async def on_ready(self):
-        print(f"✅ logged in as {self.user.name} (id: {self.user_id}) [{self.ws.platform}]")
+        print(f"✅ logged in as {self.user.name} (id: {self.user_id}) [{self.actual_platform}]")
         
         # Apply RPC on initial login if it exists in settings
         await self.apply_dashboard_rpc(self.config.data.get("settings", {}))
@@ -218,7 +244,7 @@ async def sync_loop():
                 is_active = user["is_active"]
                 settings = user["settings"]
 
-                # 1. Cleanup dead instances (e.g., from .device restart)
+                # 1. Cleanup dead instances
                 if uid in running_bots and running_bots[uid].is_closed():
                     del running_bots[uid]
 
