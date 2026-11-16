@@ -3,6 +3,7 @@ import json
 import asyncio
 import random
 import time
+import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
 import aiohttp
@@ -31,7 +32,7 @@ class SimpleHandler(BaseHTTPRequestHandler):
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(('0.0.0.0', port), SimpleHandler)
-    print(f"🌐 Web server running on port {port}")
+    print(f"🌐 [SERVER] Web server running on port {port}")
     server.serve_forever()
 
 threading.Thread(target=run_web_server, daemon=True).start()
@@ -72,12 +73,8 @@ class ChrmInstance(commands.Bot):
         if "." not in prefixes:
             prefixes.append(".")
             
-        # Standard connection, just use whatever platform is saved or default to windows
-        platform = user_config_data.get("settings", {}).get("device_platform", "windows").lower()
-        if platform not in ["windows", "macos", "linux", "ios", "android", "xbox", "playstation"]:
-            platform = "windows"
-            
-        super().__init__(command_prefix=prefixes, self_bot=True, help_command=None, platform=platform)
+        # Standard connection only. No custom gateway patches.
+        super().__init__(command_prefix=prefixes, self_bot=True, help_command=None)
         
         self.user_id = user_id
         self.token = token
@@ -101,11 +98,12 @@ class ChrmInstance(commands.Bot):
                 if filename.endswith('.py') and not filename.startswith('__'):
                     try:
                         await self.load_extension(f'plugins.{filename[:-3]}')
+                        print(f"[PLUGIN] Loaded {filename} for {self.user_id}")
                     except Exception as e:
-                        print(f"[-] failed to load {filename}: {e}")
+                        print(f"[PLUGIN ERROR] Failed to load {filename}: {e}")
 
     async def on_ready(self):
-        print(f"✅ logged in as {self.user.name} (id: {self.user_id})")
+        print(f"✅ [ONLINE] logged in as {self.user.name} (id: {self.user_id})")
         await self.apply_dashboard_rpc(self.config.data.get("settings", {}))
 
     async def apply_dashboard_rpc(self, settings):
@@ -137,8 +135,9 @@ class ChrmInstance(commands.Bot):
                     assets=assets if assets else None,
                     timestamps=timestamps
                 ))
+                print(f"[RPC] Applied dashboard RPC for {self.user_id}")
             except Exception as e:
-                print(f"❌ Failed to apply RPC for {self.user_id}: {e}")
+                print(f"[RPC ERROR] Failed to apply RPC for {self.user_id}: {e}")
 
     async def on_command_error(self, ctx, error):
         if isinstance(error, (commands.CommandNotFound, commands.CheckFailure)):
@@ -159,6 +158,7 @@ running_bots = {}
 
 async def fetch_users_from_api():
     if not API_URL or not ENGINE_SECRET:
+        print("❌ [FATAL] API_URL or ENGINE_SECRET is missing in Render Env Vars!")
         return None
         
     headers = {"x-engine-secret": ENGINE_SECRET}
@@ -169,8 +169,10 @@ async def fetch_users_from_api():
             async with session.get(API_URL, headers=headers) as resp:
                 if resp.status == 200:
                     return await resp.json()
+                print(f"❌ [API ERROR] Returned status {resp.status}")
                 return None 
-    except Exception:
+    except Exception as e:
+        print(f"❌ [API FATAL] Could not connect: {e}")
         return None
 
 async def start_bot_for_user(user_data):
@@ -178,25 +180,31 @@ async def start_bot_for_user(user_data):
     uid = user_data["discord_id"]
     
     if not token:
+        print(f"❌ [LOGIN ERROR] No token provided for {uid}")
         return
 
+    print(f"⏳ [LOGIN ATTEMPT] Connecting to Discord for {uid}...")
     bot = ChrmInstance(uid, token, user_data)
     running_bots[uid] = bot
 
     try:
-        print(f"⏳ Attempting login for {uid}...")
         await bot.start(token)
     except discord.LoginFailure:
-        print(f"❌ Invalid token for {uid}. Deleting from memory.")
+        print(f"❌ [LOGIN FAILED] Invalid/Expired token for {uid}. Removing from memory.")
+    except discord.HTTPException as e:
+        print(f"❌ [LOGIN FAILED] Discord HTTP Error for {uid}: {e}")
+    except asyncio.TimeoutError:
+        print(f"❌ [LOGIN FAILED] Connection timed out for {uid}. Discord might be blocking the IP.")
     except Exception as e:
-        print(f"❌ Bot crashed for {uid}: {e}")
+        print(f"❌ [LOGIN CRASHED] {uid} failed with error: {e}")
+        traceback.print_exc()
     finally:
         if uid in running_bots:
             del running_bots[uid]
-            print(f"🧹 Cleaned up dead instance for {uid}")
+            print(f"🧹 [CLEANUP] Removed instance for {uid}")
 
 async def sync_loop():
-    print("🤖 starting 1-second sync loop...")
+    print("🤖 [SYNC] Starting 1-second sync loop...")
     api_errors = 0
     
     while True:
@@ -207,45 +215,51 @@ async def sync_loop():
         if users is None:
             api_errors += 1
             if api_errors % 10 == 1: 
-                print("⚠️ API connection failed or timed out. Backing off...")
+                print("⚠️ [API WARNING] API connection failed or timed out. Backing off 5s...")
             await asyncio.sleep(5)
             continue
         
         api_errors = 0 
 
-        if users:
-            for uid in list(running_bots.keys()):
-                if running_bots[uid].is_closed():
-                    del running_bots[uid]
-                    print(f"🧹 Detected closed instance for {uid}. Removed.")
+        # Clean up ghost instances
+        for uid in list(running_bots.keys()):
+            if running_bots[uid].is_closed():
+                del running_bots[uid]
+                print(f"🧹 [CLEANUP] Detected closed instance for {uid}. Removed.")
 
-            for user in users:
-                uid = user["discord_id"]
-                is_active = user["is_active"]
-                settings = user["settings"]
+        for user in users:
+            uid = user["discord_id"]
+            is_active = user["is_active"]
+            settings = user["settings"]
 
-                if not is_active and uid in running_bots:
-                    print(f"🛑 stopping bot for {uid}")
+            # --- INACTIVE USERS ---
+            if not is_active:
+                if uid in running_bots:
+                    print(f"🛑 [STOP] Disconnecting bot for {uid} (is_active is False)")
                     await running_bots[uid].close()
-                    continue
+                # Do not log anything if they are inactive and not running.
+                continue
 
-                if is_active and uid not in running_bots:
-                    print(f"🚀 instantly starting bot for {uid}...")
-                    asyncio.create_task(start_bot_for_user(user))
-                    continue
+            # --- ACTIVE USERS ---
+            if is_active and uid not in running_bots:
+                print(f"🚀 [START] User {uid} is active. Launching instance...")
+                asyncio.create_task(start_bot_for_user(user))
+                continue
 
-                if is_active and uid in running_bots:
-                    bot = running_bots[uid]
-                    if bot.config.data != user:
-                        print(f"🔄 updated settings for {uid}")
-                        bot.config.data.update(user)
-                        
-                        new_prefixes = user.get("settings", {}).get("prefixes", [".", ",", "?"])
-                        if "." not in new_prefixes:
-                            new_prefixes.append(".")
-                        bot.command_prefix = new_prefixes
-                        await bot.apply_dashboard_rpc(user.get("settings", {}))
+            # --- SETTINGS SYNC ---
+            if is_active and uid in running_bots:
+                bot = running_bots[uid]
+                if bot.config.data != user:
+                    print(f"🔄 [SYNC] Updating settings for {uid}...")
+                    bot.config.data.update(user)
+                    
+                    new_prefixes = user.get("settings", {}).get("prefixes", [".", ",", "?"])
+                    if "." not in new_prefixes:
+                        new_prefixes.append(".")
+                    bot.command_prefix = new_prefixes
+                    await bot.apply_dashboard_rpc(user.get("settings", {}))
 
+        # Sleep for the remainder of the 1 second
         elapsed = time.time() - start_time
         sleep_time = max(0, 1.0 - elapsed)
         await asyncio.sleep(sleep_time)
