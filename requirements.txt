@@ -4,6 +4,7 @@ aiohttp
 fastapi
 uvicorn
 python-dotenv
+psutil
 
 # database (neon)
 asyncpg
