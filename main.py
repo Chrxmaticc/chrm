@@ -4,6 +4,7 @@ import asyncio
 import random
 import time
 import traceback
+import gc
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
 import aiohttp
@@ -73,7 +74,6 @@ class ChrmInstance(commands.Bot):
         if "." not in prefixes:
             prefixes.append(".")
             
-        # Standard connection only. No custom gateway patches.
         super().__init__(command_prefix=prefixes, self_bot=True, help_command=None)
         
         self.user_id = user_id
@@ -98,7 +98,6 @@ class ChrmInstance(commands.Bot):
                 if filename.endswith('.py') and not filename.startswith('__'):
                     try:
                         await self.load_extension(f'plugins.{filename[:-3]}')
-                        print(f"[PLUGIN] Loaded {filename} for {self.user_id}")
                     except Exception as e:
                         print(f"[PLUGIN ERROR] Failed to load {filename}: {e}")
 
@@ -135,7 +134,6 @@ class ChrmInstance(commands.Bot):
                     assets=assets if assets else None,
                     timestamps=timestamps
                 ))
-                print(f"[RPC] Applied dashboard RPC for {self.user_id}")
             except Exception as e:
                 print(f"[RPC ERROR] Failed to apply RPC for {self.user_id}: {e}")
 
@@ -155,24 +153,21 @@ API_URL = os.environ.get("API_URL")
 ENGINE_SECRET = os.environ.get("ENGINE_SECRET")
 
 running_bots = {}
+login_cooldowns = {} 
+global_http_session = None # GLOBAL SESSION TO PREVENT MEMORY LEAKS
 
 async def fetch_users_from_api():
-    if not API_URL or not ENGINE_SECRET:
-        print("❌ [FATAL] API_URL or ENGINE_SECRET is missing in Render Env Vars!")
+    if not API_URL or not ENGINE_SECRET or not global_http_session:
         return None
         
     headers = {"x-engine-secret": ENGINE_SECRET}
-    timeout = aiohttp.ClientTimeout(total=5) 
     
     try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(API_URL, headers=headers) as resp:
-                if resp.status == 200:
-                    return await resp.json()
-                print(f"❌ [API ERROR] Returned status {resp.status}")
-                return None 
-    except Exception as e:
-        print(f"❌ [API FATAL] Could not connect: {e}")
+        async with global_http_session.get(API_URL, headers=headers) as resp:
+            if resp.status == 200:
+                return await resp.json()
+            return None 
+    except Exception:
         return None
 
 async def start_bot_for_user(user_data):
@@ -180,31 +175,27 @@ async def start_bot_for_user(user_data):
     uid = user_data["discord_id"]
     
     if not token:
-        print(f"❌ [LOGIN ERROR] No token provided for {uid}")
         return
 
-    print(f"⏳ [LOGIN ATTEMPT] Connecting to Discord for {uid}...")
+    print(f"⏳ [LOGIN] Connecting for {uid}...")
     bot = ChrmInstance(uid, token, user_data)
     running_bots[uid] = bot
 
     try:
         await bot.start(token)
     except discord.LoginFailure:
-        print(f"❌ [LOGIN FAILED] Invalid/Expired token for {uid}. Removing from memory.")
-    except discord.HTTPException as e:
-        print(f"❌ [LOGIN FAILED] Discord HTTP Error for {uid}: {e}")
-    except asyncio.TimeoutError:
-        print(f"❌ [LOGIN FAILED] Connection timed out for {uid}. Discord might be blocking the IP.")
+        print(f"❌ [LOGIN FAILED] Invalid token for {uid}. Cooldown 5m.")
+        login_cooldowns[uid] = time.time() + 300 
     except Exception as e:
-        print(f"❌ [LOGIN CRASHED] {uid} failed with error: {e}")
-        traceback.print_exc()
+        print(f"❌ [LOGIN CRASHED] {uid}: {e}")
+        login_cooldowns[uid] = time.time() + 300
     finally:
         if uid in running_bots:
             del running_bots[uid]
             print(f"🧹 [CLEANUP] Removed instance for {uid}")
 
 async def sync_loop():
-    print("🤖 [SYNC] Starting 1-second sync loop...")
+    print("🤖 [SYNC] Starting memory-safe sync loop...")
     api_errors = 0
     
     while True:
@@ -214,43 +205,47 @@ async def sync_loop():
         
         if users is None:
             api_errors += 1
-            if api_errors % 10 == 1: 
-                print("⚠️ [API WARNING] API connection failed or timed out. Backing off 5s...")
-            await asyncio.sleep(5)
+            if api_errors % 5 == 1: 
+                print("⚠️ [API WARNING] API connection failed. Backing off...")
+            await asyncio.sleep(10)
             continue
         
         api_errors = 0 
 
-        # Clean up ghost instances
+        # 1. Clean up ghost instances
         for uid in list(running_bots.keys()):
             if running_bots[uid].is_closed():
                 del running_bots[uid]
                 print(f"🧹 [CLEANUP] Detected closed instance for {uid}. Removed.")
+        
+        # Force Python to free up memory
+        gc.collect()
 
         for user in users:
             uid = user["discord_id"]
             is_active = user["is_active"]
             settings = user["settings"]
 
-            # --- INACTIVE USERS ---
             if not is_active:
                 if uid in running_bots:
-                    print(f"🛑 [STOP] Disconnecting bot for {uid} (is_active is False)")
+                    print(f"🛑 [STOP] Disconnecting bot for {uid}")
                     await running_bots[uid].close()
-                # Do not log anything if they are inactive and not running.
                 continue
 
-            # --- ACTIVE USERS ---
+            if uid in login_cooldowns:
+                if time.time() < login_cooldowns[uid]:
+                    continue 
+                else:
+                    del login_cooldowns[uid] 
+
             if is_active and uid not in running_bots:
-                print(f"🚀 [START] User {uid} is active. Launching instance...")
+                print(f"🚀 [START] User {uid} is active. Launching...")
                 asyncio.create_task(start_bot_for_user(user))
                 continue
 
-            # --- SETTINGS SYNC ---
             if is_active and uid in running_bots:
                 bot = running_bots[uid]
                 if bot.config.data != user:
-                    print(f"🔄 [SYNC] Updating settings for {uid}...")
                     bot.config.data.update(user)
                     
                     new_prefixes = user.get("settings", {}).get("prefixes", [".", ",", "?"])
@@ -259,16 +254,23 @@ async def sync_loop():
                     bot.command_prefix = new_prefixes
                     await bot.apply_dashboard_rpc(user.get("settings", {}))
 
-        # Sleep for the remainder of the 1 second
+        # 3 second loop (balances speed and memory)
         elapsed = time.time() - start_time
-        sleep_time = max(0, 1.0 - elapsed)
+        sleep_time = max(0, 3.0 - elapsed)
         await asyncio.sleep(sleep_time)
 
 # ==========================================
 # 5. RUN IT
 # ==========================================
 async def main():
-    await sync_loop()
+    global global_http_session
+    # Create the session ONCE and reuse it forever
+    global_http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10))
+    
+    try:
+        await sync_loop()
+    finally:
+        await global_http_session.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
