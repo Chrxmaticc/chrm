@@ -1,7 +1,6 @@
 import os
 import json
 import asyncio
-import traceback
 import random
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -12,7 +11,7 @@ from discord.ext import commands
 from datetime import datetime
 
 # ==========================================
-# 1. WEB SERVER FOR RENDER (Starts instantly)
+# 1. WEB SERVER FOR RENDER
 # ==========================================
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -65,7 +64,7 @@ class ConfigManager:
         return self.data.get("emojis", {}).get(name, "")
 
 # ==========================================
-# 3. MULTI-USER BOT INSTANCE (VR PATCH)
+# 3. MULTI-USER BOT INSTANCE
 # ==========================================
 class ChrmInstance(commands.Bot):
     def __init__(self, user_id, token, user_config_data):
@@ -73,48 +72,17 @@ class ChrmInstance(commands.Bot):
         if "." not in prefixes:
             prefixes.append(".")
             
-        raw_platform = user_config_data.get("settings", {}).get("device_platform", "windows").lower()
-        
-        base_platform = "android" if raw_platform in ["oculus", "vr"] else raw_platform
-        valid_platforms = ["windows", "macos", "linux", "ios", "android", "xbox", "playstation"]
-        
-        if base_platform not in valid_platforms:
-            base_platform = "windows"
+        # Standard connection, just use whatever platform is saved or default to windows
+        platform = user_config_data.get("settings", {}).get("device_platform", "windows").lower()
+        if platform not in ["windows", "macos", "linux", "ios", "android", "xbox", "playstation"]:
+            platform = "windows"
             
-        super().__init__(command_prefix=prefixes, self_bot=True, help_command=None, platform=base_platform)
+        super().__init__(command_prefix=prefixes, self_bot=True, help_command=None, platform=platform)
         
         self.user_id = user_id
         self.token = token
         self.config = ConfigManager(user_config_data)
         self.locked_presence = False
-        self.actual_platform = raw_platform
-
-    async def before_identify_hook(self, shard_id, *, initial=False):
-        try:
-            await super().before_identify_hook(shard_id, initial=initial)
-        except Exception:
-            pass
-            
-        if self.actual_platform in ["oculus", "vr"] and hasattr(self, 'ws') and self.ws:
-            try:
-                self.ws._connection.properties = {
-                    "$os": "android",
-                    "$browser": "Discord Android",
-                    "$device": "Oculus Quest",
-                    "$system_locale": "en-US",
-                    "$timezone": "America/New_York",
-                    "client_version": "201.0",
-                    "release_channel": "googleRelease",
-                    "os_version": "12",
-                    "device_vendor_id": "Oculus",
-                    "device_model": "Quest 2",
-                    "browser_user_agent": "Discord-Android/201000",
-                    "browser_version": "201.0",
-                    "os_sdk_version": "31"
-                }
-                print(f"[VR] Patched properties for {self.user_id}")
-            except Exception as e:
-                print(f"[-] Failed to patch VR properties for {self.user_id}: {e}")
 
     async def human_delay(self):
         settings = self.config.data.get("settings", {})
@@ -137,7 +105,7 @@ class ChrmInstance(commands.Bot):
                         print(f"[-] failed to load {filename}: {e}")
 
     async def on_ready(self):
-        print(f"✅ logged in as {self.user.name} (id: {self.user_id}) [{self.ws.platform}]")
+        print(f"✅ logged in as {self.user.name} (id: {self.user_id})")
         await self.apply_dashboard_rpc(self.config.data.get("settings", {}))
 
     async def apply_dashboard_rpc(self, settings):
@@ -191,17 +159,17 @@ running_bots = {}
 
 async def fetch_users_from_api():
     if not API_URL or not ENGINE_SECRET:
-        return []
+        return None
         
     headers = {"x-engine-secret": ENGINE_SECRET}
-    timeout = aiohttp.ClientTimeout(total=5) # 5 second timeout to prevent hanging
+    timeout = aiohttp.ClientTimeout(total=5) 
     
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(API_URL, headers=headers) as resp:
                 if resp.status == 200:
                     return await resp.json()
-                return None # Return None to signal an error, not an empty list
+                return None 
     except Exception:
         return None
 
@@ -232,23 +200,20 @@ async def sync_loop():
     api_errors = 0
     
     while True:
-        # Start a timer to ensure we run exactly every 1 second
         start_time = time.time()
         
         users = await fetch_users_from_api()
         
-        # If API fails, wait 5 seconds to prevent spamming
         if users is None:
             api_errors += 1
-            if api_errors % 10 == 1: # Only log every 10 errors to prevent spam
+            if api_errors % 10 == 1: 
                 print("⚠️ API connection failed or timed out. Backing off...")
             await asyncio.sleep(5)
             continue
         
-        api_errors = 0 # Reset errors on success
+        api_errors = 0 
 
         if users:
-            # Detect bots that died silently
             for uid in list(running_bots.keys()):
                 if running_bots[uid].is_closed():
                     del running_bots[uid]
@@ -281,9 +246,7 @@ async def sync_loop():
                         bot.command_prefix = new_prefixes
                         await bot.apply_dashboard_rpc(user.get("settings", {}))
 
-        # Calculate how long the loop took to run
         elapsed = time.time() - start_time
-        # Sleep for the remainder of the 1 second
         sleep_time = max(0, 1.0 - elapsed)
         await asyncio.sleep(sleep_time)
 
