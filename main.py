@@ -5,6 +5,7 @@ import random
 import time
 import traceback
 import gc
+import psutil
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
 import aiohttp
@@ -86,11 +87,76 @@ class ChrmInstance(commands.Bot):
         if settings.get("delays_enabled", True):
             min_d = settings.get("delay_min", 1.5)
             max_d = settings.get("delay_max", 4.5)
+            # If min and max are the same, this just sleeps that exact amount
             await asyncio.sleep(random.uniform(min_d, max_d))
 
     async def invoke(self, ctx):
         await self.human_delay()
         await super().invoke(ctx)
+
+    # ==========================================
+    # THE NEW ADVANCED TOGGLEDELAY COMMAND
+    # ==========================================
+    @commands.command()
+    async def toggledelay(self, ctx, arg1: str = None, arg2: str = None):
+        """toggles or sets the delay. usage: .toggledelay (toggle), .toggledelay 3 (fixed), .toggledelay 1 12 (random)"""
+        if "settings" not in self.config.data:
+            self.config.data["settings"] = {}
+
+        new_state = self.config.data["settings"].get("delays_enabled", True)
+        min_d = self.config.data["settings"].get("delay_min", 1.5)
+        max_d = self.config.data["settings"].get("delay_max", 4.5)
+
+        if not arg1:
+            # Just toggle on/off
+            new_state = not new_state
+        else:
+            # Set values
+            new_state = True
+            try:
+                if arg2:
+                    # Range (e.g., 1 12)
+                    min_d = float(arg1)
+                    max_d = float(arg2)
+                else:
+                    # Fixed (e.g., 3)
+                    min_d = float(arg1)
+                    max_d = float(arg1)
+            except ValueError:
+                error = self.config.get_emoji("error")
+                return await ctx.send(f"{error} invalid numbers. usage: `.toggledelay 3` or `.toggledelay 1 12`")
+
+        # Ensure min is not bigger than max
+        if min_d > max_d:
+            min_d, max_d = max_d, min_d
+
+        # Update local memory
+        self.config.data["settings"]["delays_enabled"] = new_state
+        self.config.data["settings"]["delay_min"] = min_d
+        self.config.data["settings"]["delay_max"] = max_d
+
+        # Save to API so the sync loop doesn't revert it
+        base_api = os.environ.get("BASE_API_URL", "https://chrm-api.onrender.com")
+        try:
+            async with aiohttp.ClientSession() as session:
+                payload = {"settings": {
+                    "delays_enabled": new_state,
+                    "delay_min": min_d,
+                    "delay_max": max_d
+                }}
+                async with session.patch(f"{base_api}/api/user/{self.user_id}", json=payload) as resp:
+                    pass
+        except Exception as e:
+            print(f"Failed to save delay settings to API: {e}")
+
+        emoji = self.config.get_emoji("success")
+        if new_state:
+            if min_d == max_d:
+                await ctx.send(f"{emoji} human delay set to fixed **{min_d}s**")
+            else:
+                await ctx.send(f"{emoji} human delay randomized between **{min_d}s** and **{max_d}s**")
+        else:
+            await ctx.send(f"{emoji} human delay is now **OFF**")
 
     async def setup_hook(self):
         if os.path.exists('./plugins'):
@@ -154,7 +220,7 @@ ENGINE_SECRET = os.environ.get("ENGINE_SECRET")
 
 running_bots = {}
 login_cooldowns = {} 
-global_http_session = None # GLOBAL SESSION TO PREVENT MEMORY LEAKS
+global_http_session = None 
 
 async def fetch_users_from_api():
     if not API_URL or not ENGINE_SECRET or not global_http_session:
@@ -201,6 +267,16 @@ async def sync_loop():
     while True:
         start_time = time.time()
         
+        # MEMORY WATCHDOG
+        process = psutil.Process(os.getpid())
+        ram_usage = process.memory_info().rss / 1024 / 1024 # In MB
+        
+        if ram_usage > 460: 
+            print(f"🚨 [CRITICAL] RAM USAGE AT {ram_usage:.1f}MB. Skipping sync to prevent crash.")
+            gc.collect() 
+            await asyncio.sleep(15)
+            continue
+        
         users = await fetch_users_from_api()
         
         if users is None:
@@ -212,13 +288,12 @@ async def sync_loop():
         
         api_errors = 0 
 
-        # 1. Clean up ghost instances
+        # Clean up ghost instances
         for uid in list(running_bots.keys()):
             if running_bots[uid].is_closed():
                 del running_bots[uid]
                 print(f"🧹 [CLEANUP] Detected closed instance for {uid}. Removed.")
         
-        # Force Python to free up memory
         gc.collect()
 
         for user in users:
@@ -239,6 +314,10 @@ async def sync_loop():
                     del login_cooldowns[uid] 
 
             if is_active and uid not in running_bots:
+                if ram_usage > 420:
+                    print(f"⚠️ [RAM LIMIT] Refusing to start {uid}. Not enough memory.")
+                    continue
+                    
                 print(f"🚀 [START] User {uid} is active. Launching...")
                 asyncio.create_task(start_bot_for_user(user))
                 continue
@@ -254,7 +333,6 @@ async def sync_loop():
                     bot.command_prefix = new_prefixes
                     await bot.apply_dashboard_rpc(user.get("settings", {}))
 
-        # 3 second loop (balances speed and memory)
         elapsed = time.time() - start_time
         sleep_time = max(0, 3.0 - elapsed)
         await asyncio.sleep(sleep_time)
@@ -264,7 +342,6 @@ async def sync_loop():
 # ==========================================
 async def main():
     global global_http_session
-    # Create the session ONCE and reuse it forever
     global_http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10))
     
     try:
