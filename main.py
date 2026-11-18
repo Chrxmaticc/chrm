@@ -87,7 +87,7 @@ class ChrmInstance(commands.Bot):
         self.config = ConfigManager(user_config_data)
         self.locked_presence = False
         
-        # 🚨 THE FIX: Registers the core command so it actually responds
+        # 🚨 CRITICAL: Registers the core command so it actually works
         self.add_command(self.toggledelay)
 
     async def human_delay(self):
@@ -102,7 +102,7 @@ class ChrmInstance(commands.Bot):
         await super().invoke(ctx)
 
     # ==========================================
-    # THE NEW ADVANCED TOGGLEDELAY COMMAND
+    # THE TOGGLEDELAY COMMAND
     # ==========================================
     @commands.command()
     async def toggledelay(self, ctx, arg1: str = None, arg2: str = None):
@@ -136,7 +136,6 @@ class ChrmInstance(commands.Bot):
         self.config.data["settings"]["delay_min"] = min_d
         self.config.data["settings"]["delay_max"] = max_d
 
-        base_api = BASE_API
         try:
             async with aiohttp.ClientSession() as session:
                 payload = {"settings": {
@@ -144,7 +143,7 @@ class ChrmInstance(commands.Bot):
                     "delay_min": min_d,
                     "delay_max": max_d
                 }}
-                async with session.patch(f"{base_api}/api/user/{self.user_id}", json=payload) as resp:
+                async with session.patch(f"{BASE_API}/api/user/{self.user_id}", json=payload) as resp:
                     pass
         except Exception as e:
             print(f"Failed to save delay settings to API: {e}")
@@ -218,7 +217,6 @@ class ChrmInstance(commands.Bot):
 API_URL = os.environ.get("API_URL")
 ENGINE_SECRET = os.environ.get("ENGINE_SECRET")
 
-# The engine polls <API_URL>/api/engine/bots; accept API_URL with or without the path.
 if API_URL:
     _base = API_URL.rstrip("/")
     BOTS_URL = _base if _base.endswith("/api/engine/bots") else f"{_base}/api/engine/bots"
@@ -241,11 +239,9 @@ async def fetch_users_from_api():
             if resp.status == 200:
                 return await resp.json()
             if resp.status in (401, 403):
-                # Wrong secret: retrying every loop will never help, so warn once per minute.
                 if time.time() - _auth_warned_at.get("t", 0) > 60:
                     _auth_warned_at["t"] = time.time()
-                    print(f"🔑 [API AUTH] {BOTS_URL} rejected ENGINE_SECRET ({resp.status}). "
-                          "The value in .env does not match the API's ENGINE_SECRET.")
+                    print(f"🔑 [API AUTH] {BOTS_URL} rejected ENGINE_SECRET ({resp.status}).")
             return None 
     except Exception as e:
         print(f"🌐 [API ERROR] {BOTS_URL}: {type(e).__name__}: {e}")
@@ -282,9 +278,8 @@ async def sync_loop():
     while True:
         start_time = time.time()
         
-        # MEMORY WATCHDOG
         process = psutil.Process(os.getpid())
-        ram_usage = process.memory_info().rss / 1024 / 1024 # In MB
+        ram_usage = process.memory_info().rss / 1024 / 1024
         
         if ram_usage > 460: 
             print(f"🚨 [CRITICAL] RAM USAGE AT {ram_usage:.1f}MB. Skipping sync to prevent crash.")
@@ -303,7 +298,6 @@ async def sync_loop():
         
         api_errors = 0 
 
-        # Clean up ghost instances
         for uid in list(running_bots.keys()):
             if running_bots[uid].is_closed():
                 del running_bots[uid]
