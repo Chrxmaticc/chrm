@@ -39,7 +39,6 @@ class RPC(commands.Cog):
         """opens the components v2 rpc manager"""
         
         payload = {
-            "content": "menu", # Zero-width space to prevent empty message error
             "flags": 32768,      # IS_COMPONENTS_V2
             "components": [
                 {
