@@ -7,6 +7,7 @@ import hashlib
 import json
 import aiohttp
 import base64
+from core import components_v2 as v2
 
 # Helper to force external images into Discord's proxy format
 def format_image_url(url):
@@ -32,63 +33,42 @@ class RPC(commands.Cog):
             self.custom_rotator_task.cancel()
 
     # ==========================================
-    # 1. V2 UI COMMAND
+    # 1. V2 UI COMMAND (VIA UNFURLER)
     # ==========================================
     @commands.command()
     async def rpcmenu(self, ctx):
-        """opens the components v2 rpc manager"""
+        """opens the components v2 rpc manager via unfurler"""
         
-        payload = {
-            "flags": 32768,      # IS_COMPONENTS_V2
-            "components": [
-                {
-                    "type": 17, # Container
-                    "accent_color": 0x2b2d31,
-                    "components": [
-                        {"type": 10, "content": "## RPC Manager\nManage your Rich Presence directly from this menu."},
-                        {"type": 14, "divider": True, "spacing": 1},
-                        {
-                            "type": 1, # Action Row
-                            "components": [
-                                {"type": 2, "style": 1, "label": "Playing", "custom_id": "rpc_btn_playing", "emoji": {"name": "🎮"}},
-                                {"type": 2, "style": 1, "label": "Listening", "custom_id": "rpc_btn_listening", "emoji": {"name": "🎧"}},
-                                {"type": 2, "style": 1, "label": "Watching", "custom_id": "rpc_btn_watching", "emoji": {"name": "📺"}}
-                            ]
-                        },
-                        {
-                            "type": 1, # Action Row
-                            "components": [
-                                {"type": 2, "style": 4, "label": "Clear Status", "custom_id": "rpc_btn_clear", "emoji": {"name": "🛑"}}
-                            ]
-                        }
-                    ]
-                }
-            ]
-        }
+        # Build the V2 layout using your friend's core module
+        menu = v2.container(
+            v2.text("## RPC Manager\nManage your Rich Presence directly from this menu."),
+            v2.separator(1),
+            {
+                "type": 1, # Action Row
+                "components": [
+                    {"type": 2, "style": 1, "label": "Playing", "custom_id": "rpc_btn_playing", "emoji": {"name": "🎮"}},
+                    {"type": 2, "style": 1, "label": "Listening", "custom_id": "rpc_btn_listening", "emoji": {"name": "🎧"}},
+                    {"type": 2, "style": 1, "label": "Watching", "custom_id": "rpc_btn_watching", "emoji": {"name": "📺"}}
+                ]
+            },
+            {
+                "type": 1, # Action Row
+                "components": [
+                    {"type": 2, "style": 4, "label": "Clear Status", "custom_id": "rpc_btn_clear", "emoji": {"name": "🛑"}}
+                ]
+            },
+            accent_color=0x2b2d31
+        )
         
-        url = f"https://discord.com/api/v9/channels/{ctx.channel.id}/messages"
+        components = [menu]
         
-        # Build the headers manually to bypass discord.py limitations
-        headers = {
-            "Authorization": self.bot.http.token,
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/1.0.9021 Chrome/120.0.6099.291 Electron/28.2.0 Safari/537.36",
-        }
-        
-        # Add super properties if the bot has them
-        if hasattr(self.bot, '_connection') and getattr(self.bot._connection, 'super_properties', None):
-            sp = self.bot._connection.super_properties
-            if isinstance(sp, dict):
-                headers["X-Super-Properties"] = base64.b64encode(json.dumps(sp).encode()).decode()
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload, headers=headers) as resp:
-                    if resp.status not in (200, 201):
-                        error_text = await resp.text()
-                        await ctx.send(f"❌ Failed: {resp.status} - {error_text}")
-        except Exception as e:
-            await ctx.send(f"❌ Error: {e}")
+        # Send as a masked link
+        if v2.embed_fits(components):
+            url = v2.share_url(components)
+            # Using a zero-width space so it looks like an empty message that unfurls into the card
+            await ctx.send(f"[\u200b]({url})")
+        else:
+            await ctx.send("❌ RPC Menu payload too large.")
 
     # ==========================================
     # 2. RAW INTERACTION HANDLER
