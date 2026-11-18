@@ -6,12 +6,17 @@ import time
 import traceback
 import gc
 import psutil
+from dotenv import load_dotenv
+from api_base import BASE_API
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
 import aiohttp
 import discord
 from discord.ext import commands
 from datetime import datetime
+
+# Load .env before anything reads os.environ (PORT, API_URL, ENGINE_SECRET).
+load_dotenv()
 
 # ==========================================
 # 1. WEB SERVER FOR RENDER
@@ -136,7 +141,7 @@ class ChrmInstance(commands.Bot):
         self.config.data["settings"]["delay_max"] = max_d
 
         # Save to API so the sync loop doesn't revert it
-        base_api = os.environ.get("BASE_API_URL", "https://chrm-api.onrender.com")
+        base_api = BASE_API
         try:
             async with aiohttp.ClientSession() as session:
                 payload = {"settings": {
@@ -218,22 +223,37 @@ class ChrmInstance(commands.Bot):
 API_URL = os.environ.get("API_URL")
 ENGINE_SECRET = os.environ.get("ENGINE_SECRET")
 
+# The engine polls <API_URL>/api/engine/bots; accept API_URL with or without the path.
+if API_URL:
+    _base = API_URL.rstrip("/")
+    BOTS_URL = _base if _base.endswith("/api/engine/bots") else f"{_base}/api/engine/bots"
+else:
+    BOTS_URL = None
+
 running_bots = {}
 login_cooldowns = {} 
 global_http_session = None 
+_auth_warned_at = {}
 
 async def fetch_users_from_api():
-    if not API_URL or not ENGINE_SECRET or not global_http_session:
+    if not BOTS_URL or not ENGINE_SECRET or not global_http_session:
         return None
         
     headers = {"x-engine-secret": ENGINE_SECRET}
     
     try:
-        async with global_http_session.get(API_URL, headers=headers) as resp:
+        async with global_http_session.get(BOTS_URL, headers=headers) as resp:
             if resp.status == 200:
                 return await resp.json()
+            if resp.status in (401, 403):
+                # Wrong secret: retrying every loop will never help, so warn once per minute.
+                if time.time() - _auth_warned_at.get("t", 0) > 60:
+                    _auth_warned_at["t"] = time.time()
+                    print(f"🔑 [API AUTH] {BOTS_URL} rejected ENGINE_SECRET ({resp.status}). "
+                          "The value in .env does not match the API's ENGINE_SECRET.")
             return None 
-    except Exception:
+    except Exception as e:
+        print(f"🌐 [API ERROR] {BOTS_URL}: {type(e).__name__}: {e}")
         return None
 
 async def start_bot_for_user(user_data):
