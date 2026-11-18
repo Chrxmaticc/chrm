@@ -3,11 +3,13 @@ from discord.ext import commands
 import aiohttp
 import os
 
+from api_base import BASE_API
+
 class Device(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        # Use the base API URL
-        self.base_api = os.environ.get("BASE_API_URL", "https://chrm-api.onrender.com")
+        # Use the shared base API URL (see api_base.py)
+        self.base_api = BASE_API
 
     @commands.command()
     @commands.cooldown(1, 10, commands.BucketType.user)

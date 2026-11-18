@@ -4,7 +4,7 @@ Local stand-in for chrm-api's GET /api/engine/bots.
 The real API needs a Neon DATABASE_URL. This mock serves the same JSON shape from
 values in .env so the engine can be run and tested locally without a database.
 
-Run:  .venv/bin/python mock_api.py
+Run:  .venv/bin/python core/mock_api.py
 Then point the engine at it: API_URL=http://127.0.0.1:8080
 """
 import os
@@ -24,6 +24,10 @@ PORT = int(os.environ.get("MOCK_PORT", "8080"))
 
 # settings mirror what the dashboard writes; keys line up with config.json
 def users():
+    return list(_USERS.values())
+
+
+def _seed_users():
     if not USER_TOKEN:
         return []
     return [{
@@ -42,15 +46,46 @@ def users():
     }]
 
 
+# Mutable copy so PATCH writes are visible to later GETs.
+_USERS = {u["discord_id"]: u for u in _seed_users()}
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/api/engine/bots"):
             if self.headers.get("x-engine-secret") != ENGINE_SECRET:
                 return self._json(401, {"detail": "Unauthorized"})
             return self._json(200, users())
+        if self.path.startswith("/api/user/"):
+            uid = self.path.rsplit("/", 1)[-1].split("?")[0]
+            user = _USERS.get(uid)
+            if not user:
+                return self._json(200, {"settings": {}, "is_active": False})
+            return self._json(200, {"settings": user["settings"], "is_active": user["is_active"]})
         if self.path in ("/", "/health"):
             return self._json(200, {"status": "mock api is online"})
         return self._json(404, {"detail": "not found"})
+
+    def do_PATCH(self):
+        """Mirrors chrm-api's PATCH /api/user/{discord_id}: shallow update of the settings blob."""
+        if not self.path.startswith("/api/user/"):
+            return self._json(404, {"detail": "not found"})
+        uid = self.path.rsplit("/", 1)[-1].split("?")[0]
+        user = _USERS.get(uid)
+        if not user:
+            return self._json(404, {"detail": "User not found"})
+        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}")
+        except ValueError:
+            return self._json(400, {"detail": "invalid json"})
+
+        if payload.get("is_active") is not None:
+            user["is_active"] = payload["is_active"]
+        if payload.get("settings"):
+            user["settings"].update(payload["settings"])
+        print(f"[mock-api] PATCH /api/user/{uid} ok")
+        return self._json(200, {"status": "success"})
 
     def _json(self, code, payload):
         body = json.dumps(payload).encode()

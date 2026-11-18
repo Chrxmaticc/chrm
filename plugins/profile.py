@@ -6,6 +6,8 @@ import asyncio
 import random
 import base64
 
+from api_base import BASE_API
+
 class Profile(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -19,7 +21,7 @@ class Profile(commands.Cog):
             self.bot.config.data["features"] = {}
         
         self.bot.config.data["features"][feature_key] = data
-        base_api = os.environ.get("BASE_API_URL", "https://chrm-api.onrender.com")
+        base_api = BASE_API
         try:
             async with aiohttp.ClientSession() as session:
                 payload = {"settings": {"features": self.bot.config.data["features"]}}
