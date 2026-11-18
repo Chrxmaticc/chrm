@@ -5,6 +5,7 @@ import re
 from datetime import datetime
 import hashlib
 import json
+import aiohttp
 
 # Helper to force external images into Discord's proxy format
 def format_image_url(url):
@@ -62,8 +63,22 @@ class RPC(commands.Cog):
                 }
             ]
         }
-        route = discord.http.Route("POST", "/channels/{channel_id}/messages", channel_id=ctx.channel.id)
-        await self.bot.http.request(route, json=payload)
+        
+        # Use raw aiohttp to bypass discord.py's sanitizer
+        url = f"https://discord.com/api/v9/channels/{ctx.channel.id}/messages"
+        headers = {
+            "Authorization": self.bot.http.token,
+            "Content-Type": "application/json"
+        }
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, headers=headers) as resp:
+                    if resp.status not in (200, 201):
+                        error_text = await resp.text()
+                        await ctx.send(f"❌ Failed to send V2 UI: {resp.status} - {error_text}")
+        except Exception as e:
+            await ctx.send(f"❌ Error: {e}")
 
     # ==========================================
     # 2. RAW INTERACTION HANDLER
@@ -79,12 +94,11 @@ class RPC(commands.Cog):
         interaction_id = data.get("id")
         interaction_token = data.get("token")
 
-        callback_route = discord.http.Route(
-            "POST", 
-            "/interactions/{interaction_id}/{interaction_token}/callback",
-            interaction_id=interaction_id,
-            interaction_token=interaction_token
-        )
+        url = f"https://discord.com/api/v9/interactions/{interaction_id}/{interaction_token}/callback"
+        headers = {
+            "Authorization": self.bot.http.token,
+            "Content-Type": "application/json"
+        }
 
         # --- BUTTON CLICKS ---
         if interaction_type == 3:
@@ -103,14 +117,16 @@ class RPC(commands.Cog):
                         ]
                     }
                 }
-                await self.bot.http.request(callback_route, json=modal_payload)
+                async with aiohttp.ClientSession() as session:
+                    await session.post(url, json=modal_payload, headers=headers)
                 return
 
             elif custom_id == "rpc_btn_clear":
                 self.bot.locked_presence = False
                 await self.bot.change_presence(activity=None)
                 response = {"type": 4, "data": {"content": "🛑 RPC forcefully cleared.", "flags": 64}}
-                await self.bot.http.request(callback_route, json=response)
+                async with aiohttp.ClientSession() as session:
+                    await session.post(url, json=response, headers=headers)
                 return
 
         # --- MODAL SUBMITS ---
@@ -144,7 +160,8 @@ class RPC(commands.Cog):
             except Exception as e:
                 response = {"type": 4, "data": {"content": f"❌ Failed to set RPC: {e}", "flags": 64}}
 
-            await self.bot.http.request(callback_route, json=response)
+            async with aiohttp.ClientSession() as session:
+                await session.post(url, json=response, headers=headers)
             return
 
     # ==========================================
