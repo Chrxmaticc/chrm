@@ -86,13 +86,15 @@ class ChrmInstance(commands.Bot):
         self.token = token
         self.config = ConfigManager(user_config_data)
         self.locked_presence = False
+        
+        # 🚨 THE FIX: Registers the core command so it actually responds
+        self.add_command(self.toggledelay)
 
     async def human_delay(self):
         settings = self.config.data.get("settings", {})
         if settings.get("delays_enabled", True):
             min_d = settings.get("delay_min", 1.5)
             max_d = settings.get("delay_max", 4.5)
-            # If min and max are the same, this just sleeps that exact amount
             await asyncio.sleep(random.uniform(min_d, max_d))
 
     async def invoke(self, ctx):
@@ -113,34 +115,27 @@ class ChrmInstance(commands.Bot):
         max_d = self.config.data["settings"].get("delay_max", 4.5)
 
         if not arg1:
-            # Just toggle on/off
             new_state = not new_state
         else:
-            # Set values
             new_state = True
             try:
                 if arg2:
-                    # Range (e.g., 1 12)
                     min_d = float(arg1)
                     max_d = float(arg2)
                 else:
-                    # Fixed (e.g., 3)
                     min_d = float(arg1)
                     max_d = float(arg1)
             except ValueError:
                 error = self.config.get_emoji("error")
                 return await ctx.send(f"{error} invalid numbers. usage: `.toggledelay 3` or `.toggledelay 1 12`")
 
-        # Ensure min is not bigger than max
         if min_d > max_d:
             min_d, max_d = max_d, min_d
 
-        # Update local memory
         self.config.data["settings"]["delays_enabled"] = new_state
         self.config.data["settings"]["delay_min"] = min_d
         self.config.data["settings"]["delay_max"] = max_d
 
-        # Save to API so the sync loop doesn't revert it
         base_api = BASE_API
         try:
             async with aiohttp.ClientSession() as session:
