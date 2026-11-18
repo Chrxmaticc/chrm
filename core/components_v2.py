@@ -23,6 +23,15 @@ answers ``50006 Cannot send an empty message`` on v9 and v10 alike, because the 
 flag is only honoured for applications. So the practical use of this module is
 :func:`share_url` -- encode the layout and post the discord.builders link.
 :func:`send` is kept for when a real bot token is available.
+
+Hard limits on the unfurl surface (exceeding either one renders *nothing* -- the
+client shows "content unavailable" with no Open Graph fallback, which is easy to
+mistake for a client bug):
+
+* :data:`MAX_EMBED_BYTES` -- 3,000 bytes of JSON, escape sequences included.
+* 40 components total, container included.
+
+https://docs.discord.com/developers/link-previews/component-embeds
 """
 import base64
 import gzip
@@ -46,6 +55,11 @@ V2_FLAG = 1 << 15
 SHARE_PREFIX = "https://discord.builders/embed?v1="
 PAYLOAD_PREFIX = "1$"
 
+#: Discord refuses to render a component-embed document bigger than this (bytes).
+#: Over the cap nothing renders at all -- not even the Open Graph fallback.
+#: https://docs.discord.com/developers/link-previews/component-embeds
+MAX_EMBED_BYTES = 3000
+
 # Layout component types.
 ACTION_ROW = 1
 BUTTON = 2
@@ -55,6 +69,11 @@ THUMBNAIL = 11
 MEDIA_GALLERY = 12
 SEPARATOR = 14
 CONTAINER = 17
+
+#: The only component types Discord accepts on the unfurl surface
+#: (buttons must be link-style, ``custom_id`` is rejected there).
+EMBED_ALLOWED_TYPES = frozenset({ACTION_ROW, BUTTON, SECTION, TEXT_DISPLAY,
+                                 THUMBNAIL, MEDIA_GALLERY, SEPARATOR, CONTAINER})
 
 
 # ---------------------------------------------------------------- builders
@@ -104,6 +123,33 @@ def share_url(components: List[Dict[str, Any]]) -> str:
     return SHARE_PREFIX + encode_url_payload(components)
 
 
+# ---------------------------------------------------------------- embed limits
+def embed_document(components: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """The document Discord reads: ``{"component": <the single root container>}``."""
+    root = components[0] if isinstance(components, list) else components
+    return {"component": root}
+
+
+def embed_document_json(components: List[Dict[str, Any]]) -> str:
+    """Exact JSON text Discord measures -- escape sequences at their full length.
+
+    ``</`` is escaped so the payload can never close a script tag; those extra
+    bytes count toward :data:`MAX_EMBED_BYTES`, which this reproduces.
+    """
+    document = json.dumps(embed_document(components), separators=(",", ":"), ensure_ascii=False)
+    return document.replace("</", "<\\/")
+
+
+def embed_size(components: List[Dict[str, Any]]) -> int:
+    """Byte length of the embed document as Discord counts it."""
+    return len(embed_document_json(components).encode())
+
+
+def embed_fits(components: List[Dict[str, Any]]) -> bool:
+    """True when the payload is small enough for Discord to actually render."""
+    return embed_size(components) <= MAX_EMBED_BYTES
+
+
 #: The tag discord.builders serves and Discord's unfurler reads.
 EMBED_SCRIPT_ID = "discord:component-embed"
 
@@ -114,11 +160,17 @@ def build_embed_page(components: List[Dict[str, Any]]) -> str:
     discord.builders serves exactly this: one component wrapped in
     ``{"component": ...}`` inside a ``<script id="discord:component-embed">``.
     Useful for self-hosting a short share page on the engine's own web server.
+
+    Raises ``ValueError`` when the payload is over :data:`MAX_EMBED_BYTES`, since
+    Discord shows a dead "content unavailable" card for those.
     """
-    component = components[0] if isinstance(components, list) else components
-    payload = json.dumps({"component": component}, separators=(",", ":"), ensure_ascii=False)
-    # Guard against a content string closing the script tag early.
-    payload = payload.replace("</", "<\\/")
+    payload = embed_document_json(components)
+    size = len(payload.encode())
+    if size > MAX_EMBED_BYTES:
+        raise ValueError(
+            f"component embed is {size} bytes; Discord's limit is {MAX_EMBED_BYTES} "
+            f"({size - MAX_EMBED_BYTES} over)"
+        )
     return (
         '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
         f'<script id="{EMBED_SCRIPT_ID}" type="application/json">{payload}</script>'

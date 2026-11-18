@@ -58,31 +58,30 @@ class Automation(commands.Cog):
                     print(f"[AUTOMATION] Failed to react: {e}")
                 break
 
-    # --- COMMANDS ---
+    # --- RESPONDER GROUP ---
 
-    @commands.command()
-    async def addrespond(self, ctx, trigger: str, *, response: str):
-        """adds an auto-responder. usage: .addrespond hello hi there"""
+    @commands.group(name="responder", aliases=["respond"], invoke_without_command=True)
+    async def responder(self, ctx):
+        """manages auto-responders. usage: .responder add <trigger> <response>"""
+        error = self.bot.config.get_emoji("error")
+        await ctx.send(
+            f"{error} usage: `.responder add <trigger> <response>` | "
+            f"`.responder remove <trigger>` | `.responder list`"
+        )
+
+    @responder.command(name="add")
+    async def responder_add(self, ctx, trigger: str, *, response: str):
+        """adds an auto-responder. usage: .responder add hello hi there"""
         autorespond = self.bot.config.data.get("features", {}).get("autorespond", {})
         autorespond[trigger.lower()] = response
         await self._save_feature("autorespond", autorespond)
-        
+
         emoji = self.bot.config.get_emoji("success")
         await ctx.send(f"{emoji} will now respond to `{trigger.lower()}`")
 
-    @commands.command()
-    async def addreact(self, ctx, trigger: str, emoji: str):
-        """adds an auto-reactor. usage: .addreact lol 😂"""
-        autoreact = self.bot.config.data.get("features", {}).get("autoreact", {})
-        autoreact[trigger.lower()] = emoji
-        await self._save_feature("autoreact", autoreact)
-        
-        success = self.bot.config.get_emoji("success")
-        await ctx.send(f"{success} will now react to `{trigger.lower()}` with {emoji}")
-
-    @commands.command()
-    async def removerespond(self, ctx, trigger: str):
-        """removes an auto-responder. usage: .removerespond hello"""
+    @responder.command(name="remove", aliases=["delete", "del"])
+    async def responder_remove(self, ctx, trigger: str):
+        """removes an auto-responder. usage: .responder remove hello"""
         autorespond = self.bot.config.data.get("features", {}).get("autorespond", {})
         if trigger.lower() in autorespond:
             del autorespond[trigger.lower()]
@@ -93,9 +92,40 @@ class Automation(commands.Cog):
             error = self.bot.config.get_emoji("error")
             await ctx.send(f"{error} trigger `{trigger.lower()}` not found.")
 
-    @commands.command()
-    async def removereact(self, ctx, trigger: str):
-        """removes an auto-reactor. usage: .removereact lol"""
+    @responder.command(name="list")
+    async def responder_list(self, ctx):
+        """lists all auto-responders. usage: .responder list"""
+        autorespond = self.bot.config.data.get("features", {}).get("autorespond", {}) or {}
+        if not autorespond:
+            return await ctx.send("no auto-responders set yet.")
+
+        lines = [f"`{trigger}` ➔ {response}" for trigger, response in sorted(autorespond.items())]
+        await ctx.send("**active auto-responders:**\n" + "\n".join(lines))
+
+    # --- REACTION GROUP ---
+
+    @commands.group(name="reaction", aliases=["react"], invoke_without_command=True)
+    async def reaction(self, ctx):
+        """manages auto-reactions. usage: .reaction add <trigger> <emoji>"""
+        error = self.bot.config.get_emoji("error")
+        await ctx.send(
+            f"{error} usage: `.reaction add <trigger> <emoji>` | "
+            f"`.reaction remove <trigger>` | `.reaction list`"
+        )
+
+    @reaction.command(name="add")
+    async def reaction_add(self, ctx, trigger: str, emoji: str):
+        """adds an auto-reactor. usage: .reaction add lol 😂"""
+        autoreact = self.bot.config.data.get("features", {}).get("autoreact", {})
+        autoreact[trigger.lower()] = emoji
+        await self._save_feature("autoreact", autoreact)
+
+        success = self.bot.config.get_emoji("success")
+        await ctx.send(f"{success} will now react to `{trigger.lower()}` with {emoji}")
+
+    @reaction.command(name="remove", aliases=["delete", "del"])
+    async def reaction_remove(self, ctx, trigger: str):
+        """removes an auto-reactor. usage: .reaction remove lol"""
         autoreact = self.bot.config.data.get("features", {}).get("autoreact", {})
         if trigger.lower() in autoreact:
             del autoreact[trigger.lower()]
@@ -105,6 +135,16 @@ class Automation(commands.Cog):
         else:
             error = self.bot.config.get_emoji("error")
             await ctx.send(f"{error} trigger `{trigger.lower()}` not found.")
+
+    @reaction.command(name="list")
+    async def reaction_list(self, ctx):
+        """lists all auto-reactions. usage: .reaction list"""
+        autoreact = self.bot.config.data.get("features", {}).get("autoreact", {}) or {}
+        if not autoreact:
+            return await ctx.send("no auto-reactions set yet.")
+
+        lines = [f"`{trigger}` ➔ {emoji}" for trigger, emoji in sorted(autoreact.items())]
+        await ctx.send("**active auto-reactions:**\n" + "\n".join(lines))
 
     @commands.command()
     async def afk(self, ctx, *, msg="afk"):
