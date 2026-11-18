@@ -4,12 +4,7 @@ import asyncio
 import re
 from datetime import datetime
 import hashlib
-import json
-import aiohttp
-import base64
-from core import components_v2 as v2
 
-# Helper to force external images into Discord's proxy format
 def format_image_url(url):
     if not url:
         return None
@@ -23,6 +18,78 @@ def format_image_url(url):
         return f"mp:external/{url_hash}/https/{clean_url}"
     return url
 
+# ==========================================
+# 1. MODALS
+# ==========================================
+class RPMModal(discord.ui.Modal, title="Set Rich Presence"):
+    def __init__(self, cog, act_type):
+        super().__init__()
+        self.cog = cog
+        self.act_type = act_type
+        
+        self.name = discord.ui.TextInput(label="App/Game Name", placeholder="e.g. Minecraft", required=True)
+        self.details = discord.ui.TextInput(label="Details (Line 1)", required=False)
+        self.state = discord.ui.TextInput(label="State (Line 2)", required=False)
+        self.image = discord.ui.TextInput(label="Discord CDN Image URL", placeholder="https://cdn.discordapp.com/...", required=False)
+        
+        self.add_item(self.name)
+        self.add_item(self.details)
+        self.add_item(self.state)
+        self.add_item(self.image)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        types = {
+            "playing": discord.ActivityType.playing,
+            "listening": discord.ActivityType.listening,
+            "watching": discord.ActivityType.watching
+        }
+        
+        assets = {}
+        if self.image.value:
+            assets["large_image"] = format_image_url(self.image.value)
+            if self.details.value:
+                assets["large_text"] = self.details.value
+
+        try:
+            self.cog.bot.locked_presence = True
+            await self.cog.bot.change_presence(activity=discord.Activity(
+                type=types[self.act_type],
+                name=self.name.value,
+                details=self.details.value,
+                state=self.state.value,
+                assets=assets if assets else None
+            ))
+            await interaction.response.send_message(f"✅ RPC updated to **{self.act_type.title()} {self.name.value}**.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Failed to set RPC: {e}", ephemeral=True)
+
+# ==========================================
+# 2. BUTTON VIEW (V1)
+# ==========================================
+class RPCView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=None) # No timeout so buttons stay active
+        self.cog = cog
+
+    @discord.ui.button(label="Playing", style=discord.ButtonStyle.primary, emoji="🎮")
+    async def btn_playing(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(RPMModal(self.cog, "playing"))
+
+    @discord.ui.button(label="Listening", style=discord.ButtonStyle.primary, emoji="🎧")
+    async def btn_listening(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(RPMModal(self.cog, "listening"))
+
+    @discord.ui.button(label="Watching", style=discord.ButtonStyle.primary, emoji="📺")
+    async def btn_watching(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(RPMModal(self.cog, "watching"))
+
+    @discord.ui.button(label="Clear Status", style=discord.ButtonStyle.danger, emoji="🛑")
+    async def btn_clear(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.cog.bot.locked_presence = False
+        await self.cog.bot.change_presence(activity=None)
+        await interaction.response.send_message("🛑 RPC forcefully cleared.", ephemeral=True)
+
+
 class RPC(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -33,131 +100,20 @@ class RPC(commands.Cog):
             self.custom_rotator_task.cancel()
 
     # ==========================================
-    # 1. V2 UI COMMAND (VIA UNFURLER)
+    # 3. THE MENU COMMAND
     # ==========================================
     @commands.command()
     async def rpcmenu(self, ctx):
-        """opens the components v2 rpc manager via unfurler"""
-        
-        # Build the V2 layout using your friend's core module
-        menu = v2.container(
-            v2.text("## RPC Manager\nManage your Rich Presence directly from this menu."),
-            v2.separator(1),
-            {
-                "type": 1, # Action Row
-                "components": [
-                    {"type": 2, "style": 1, "label": "Playing", "custom_id": "rpc_btn_playing", "emoji": {"name": "🎮"}},
-                    {"type": 2, "style": 1, "label": "Listening", "custom_id": "rpc_btn_listening", "emoji": {"name": "🎧"}},
-                    {"type": 2, "style": 1, "label": "Watching", "custom_id": "rpc_btn_watching", "emoji": {"name": "📺"}}
-                ]
-            },
-            {
-                "type": 1, # Action Row
-                "components": [
-                    {"type": 2, "style": 4, "label": "Clear Status", "custom_id": "rpc_btn_clear", "emoji": {"name": "🛑"}}
-                ]
-            },
-            accent_color=0x2b2d31
+        """opens the interactive rpc manager"""
+        embed = discord.Embed(
+            title="RPC Manager",
+            description="Manage your Rich Presence directly from this menu. Select an activity type below.",
+            color=0x2b2d31
         )
-        
-        components = [menu]
-        
-        # Send as a masked link
-        if v2.embed_fits(components):
-            url = v2.share_url(components)
-            # Using a zero-width space so it looks like an empty message that unfurls into the card
-            await ctx.send(f"[\u200b]({url})")
-        else:
-            await ctx.send("❌ RPC Menu payload too large.")
+        await ctx.send(embed=embed, view=RPCView(self))
 
     # ==========================================
-    # 2. RAW INTERACTION HANDLER
-    # ==========================================
-    @commands.Cog.listener()
-    async def on_socket_response(self, msg):
-        if msg.get("t") != "INTERACTION_CREATE":
-            return
-
-        data = msg.get("d", {})
-        interaction_type = data.get("type")
-        custom_id = data.get("data", {}).get("custom_id", "")
-        interaction_id = data.get("id")
-        interaction_token = data.get("token")
-
-        url = f"https://discord.com/api/v9/interactions/{interaction_id}/{interaction_token}/callback"
-        
-        headers = {
-            "Authorization": self.bot.http.token,
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/1.0.9021 Chrome/120.0.6099.291 Electron/28.2.0 Safari/537.36",
-        }
-
-        # --- BUTTON CLICKS ---
-        if interaction_type == 3:
-            if custom_id in ["rpc_btn_playing", "rpc_btn_listening", "rpc_btn_watching"]:
-                act_type = custom_id.split("_")[-1]
-                modal_payload = {
-                    "type": 9,
-                    "data": {
-                        "title": f"Set {act_type.title()} Status",
-                        "custom_id": f"rpc_modal_submit_{act_type}",
-                        "components": [
-                            {"type": 1, "components": [{"type": 4, "custom_id": "rpc_name", "label": "App/Game Name", "style": 1, "placeholder": "e.g. Minecraft", "required": True}]},
-                            {"type": 1, "components": [{"type": 4, "custom_id": "rpc_details", "label": "Details (Line 1)", "style": 1, "required": False}]},
-                            {"type": 1, "components": [{"type": 4, "custom_id": "rpc_state", "label": "State (Line 2)", "style": 1, "required": False}]},
-                            {"type": 1, "components": [{"type": 4, "custom_id": "rpc_image", "label": "Discord CDN Image URL", "style": 1, "placeholder": "https://cdn.discordapp.com/...", "required": False}]}
-                        ]
-                    }
-                }
-                async with aiohttp.ClientSession() as session:
-                    await session.post(url, json=modal_payload, headers=headers)
-                return
-
-            elif custom_id == "rpc_btn_clear":
-                self.bot.locked_presence = False
-                await self.bot.change_presence(activity=None)
-                response = {"type": 4, "data": {"content": "🛑 RPC forcefully cleared.", "flags": 64}}
-                async with aiohttp.ClientSession() as session:
-                    await session.post(url, json=response, headers=headers)
-                return
-
-        # --- MODAL SUBMITS ---
-        if interaction_type == 5 and custom_id.startswith("rpc_modal_submit_"):
-            act_type_str = custom_id.replace("rpc_modal_submit_", "")
-            components = data.get("data", {}).get("components", [])
-            name, details, state, image_url = None, None, None, None
-            
-            for row in components:
-                for comp in row.get("components", []):
-                    cid = comp.get("custom_id")
-                    val = comp.get("value")
-                    if cid == "rpc_name": name = val
-                    elif cid == "rpc_details": details = val
-                    elif cid == "rpc_state": state = val
-                    elif cid == "rpc_image": image_url = val
-
-            types = {"playing": discord.ActivityType.playing, "listening": discord.ActivityType.listening, "watching": discord.ActivityType.watching}
-            assets = {}
-            if image_url:
-                assets["large_image"] = format_image_url(image_url)
-                if details: assets["large_text"] = details
-
-            try:
-                self.bot.locked_presence = True
-                await self.bot.change_presence(activity=discord.Activity(
-                    type=types[act_type_str], name=name, details=details, state=state,
-                    assets=assets if assets else None
-                ))
-                response = {"type": 4, "data": {"content": f"✅ RPC updated to **{act_type_str.title()} {name}**.", "flags": 64}}
-            except Exception as e:
-                response = {"type": 4, "data": {"content": f"❌ Failed to set RPC: {e}", "flags": 64}}
-
-            async with aiohttp.ClientSession() as session:
-                await session.post(url, json=response, headers=headers)
-            return
-
-    # ==========================================
-    # 3. TEXT COMMANDS
+    # 4. TEXT COMMANDS
     # ==========================================
     @commands.command()
     async def rpc(self, ctx, activity_type: str, *, args):
@@ -215,7 +171,7 @@ class RPC(commands.Cog):
         await ctx.send(f"{self.bot.config.get_emoji('success')} presence completely wiped.")
 
     # ==========================================
-    # 4. STATUS ROTATOR
+    # 5. STATUS ROTATOR
     # ==========================================
     @commands.command()
     async def startrotator(self, ctx, *, args):
