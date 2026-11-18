@@ -6,6 +6,7 @@ from datetime import datetime
 import hashlib
 import json
 import aiohttp
+import base64
 
 # Helper to force external images into Discord's proxy format
 def format_image_url(url):
@@ -36,17 +37,19 @@ class RPC(commands.Cog):
     @commands.command()
     async def rpcmenu(self, ctx):
         """opens the components v2 rpc manager"""
+        
         payload = {
-            "flags": 32768,
+            "content": "menu", # Zero-width space to prevent empty message error
+            "flags": 32768,      # IS_COMPONENTS_V2
             "components": [
                 {
-                    "type": 17,
+                    "type": 17, # Container
                     "accent_color": 0x2b2d31,
                     "components": [
                         {"type": 10, "content": "## RPC Manager\nManage your Rich Presence directly from this menu."},
                         {"type": 14, "divider": True, "spacing": 1},
                         {
-                            "type": 1,
+                            "type": 1, # Action Row
                             "components": [
                                 {"type": 2, "style": 1, "label": "Playing", "custom_id": "rpc_btn_playing", "emoji": {"name": "🎮"}},
                                 {"type": 2, "style": 1, "label": "Listening", "custom_id": "rpc_btn_listening", "emoji": {"name": "🎧"}},
@@ -54,7 +57,7 @@ class RPC(commands.Cog):
                             ]
                         },
                         {
-                            "type": 1,
+                            "type": 1, # Action Row
                             "components": [
                                 {"type": 2, "style": 4, "label": "Clear Status", "custom_id": "rpc_btn_clear", "emoji": {"name": "🛑"}}
                             ]
@@ -64,19 +67,27 @@ class RPC(commands.Cog):
             ]
         }
         
-        # Use raw aiohttp to bypass discord.py's sanitizer
         url = f"https://discord.com/api/v9/channels/{ctx.channel.id}/messages"
+        
+        # Build the headers manually to bypass discord.py limitations
         headers = {
             "Authorization": self.bot.http.token,
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/1.0.9021 Chrome/120.0.6099.291 Electron/28.2.0 Safari/537.36",
         }
+        
+        # Add super properties if the bot has them
+        if hasattr(self.bot, '_connection') and getattr(self.bot._connection, 'super_properties', None):
+            sp = self.bot._connection.super_properties
+            if isinstance(sp, dict):
+                headers["X-Super-Properties"] = base64.b64encode(json.dumps(sp).encode()).decode()
         
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload, headers=headers) as resp:
                     if resp.status not in (200, 201):
                         error_text = await resp.text()
-                        await ctx.send(f"❌ Failed to send V2 UI: {resp.status} - {error_text}")
+                        await ctx.send(f"❌ Failed: {resp.status} - {error_text}")
         except Exception as e:
             await ctx.send(f"❌ Error: {e}")
 
@@ -95,9 +106,11 @@ class RPC(commands.Cog):
         interaction_token = data.get("token")
 
         url = f"https://discord.com/api/v9/interactions/{interaction_id}/{interaction_token}/callback"
+        
         headers = {
             "Authorization": self.bot.http.token,
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/1.0.9021 Chrome/120.0.6099.291 Electron/28.2.0 Safari/537.36",
         }
 
         # --- BUTTON CLICKS ---
