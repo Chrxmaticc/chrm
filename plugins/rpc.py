@@ -6,9 +6,6 @@ from datetime import datetime
 import hashlib
 import json
 import aiohttp
-import base64
-
-print("[RPC] Loading RPC plugin...")
 
 def format_image_url(url):
     if not url:
@@ -27,25 +24,22 @@ class RPC(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.custom_rotator_task = None
-        print("[RPC] RPC Cog initialized.")
 
     def cog_unload(self):
         if self.custom_rotator_task and not self.custom_rotator_task.done():
             self.custom_rotator_task.cancel()
 
     # ==========================================
-    # 1. MENU COMMAND (RAW V1 BUTTONS)
+    # 1. SEND THE MENU (WITH BUTTONS)
     # ==========================================
     @commands.command()
     async def rpcmenu(self, ctx):
-        """opens the interactive rpc manager"""
-        print(f"[RPC] rpcmenu triggered by {ctx.author.name}")
-        
+        """opens the interactive rpc manager using raw components"""
         payload = {
             "content": "### RPC Manager\nSelect an activity type below to set your Rich Presence.",
             "components": [
                 {
-                    "type": 1, # Action Row
+                    "type": 1,  # Action Row
                     "components": [
                         {"type": 2, "style": 1, "label": "Playing", "custom_id": "rpc_btn_playing", "emoji": {"name": "🎮"}},
                         {"type": 2, "style": 1, "label": "Listening", "custom_id": "rpc_btn_listening", "emoji": {"name": "🎧"}},
@@ -53,36 +47,31 @@ class RPC(commands.Cog):
                     ]
                 },
                 {
-                    "type": 1, # Action Row
+                    "type": 1,  # Action Row
                     "components": [
                         {"type": 2, "style": 4, "label": "Clear Status", "custom_id": "rpc_btn_clear", "emoji": {"name": "🛑"}}
                     ]
                 }
             ]
         }
-        
+
         url = f"https://discord.com/api/v9/channels/{ctx.channel.id}/messages"
         headers = {
             "Authorization": self.bot.http.token,
             "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/1.0.9021 Chrome/120.0.6099.291 Electron/28.2.0 Safari/537.36",
         }
-        
+
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload, headers=headers) as resp:
                     if resp.status not in (200, 201):
                         error_text = await resp.text()
-                        print(f"[RPC] Failed to send menu: {resp.status} - {error_text}")
-                        await ctx.send(f"❌ Failed to send menu: {resp.status}")
-                    else:
-                        print("[RPC] Menu sent successfully.")
+                        await ctx.send(f"❌ Failed to send menu: {resp.status} - {error_text}")
         except Exception as e:
-            print(f"[RPC] Error sending menu: {e}")
-            await ctx.send(f"❌ Error: {e}")
+            await ctx.send(f"❌ Error sending menu: {e}")
 
     # ==========================================
-    # 2. RAW INTERACTION HANDLER (BUTTONS & MODALS)
+    # 2. RAW INTERACTION HANDLER (CATCHES BUTTONS & MODALS)
     # ==========================================
     @commands.Cog.listener()
     async def on_socket_response(self, msg):
@@ -103,14 +92,12 @@ class RPC(commands.Cog):
         headers = {
             "Authorization": self.bot.http.token,
             "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) discord/1.0.9021 Chrome/120.0.6099.291 Electron/28.2.0 Safari/537.36",
         }
 
         # --- BUTTON CLICKS (Type 3) ---
         if interaction_type == 3:
             if custom_id in ["rpc_btn_playing", "rpc_btn_listening", "rpc_btn_watching"]:
                 act_type = custom_id.split("_")[-1]
-                print(f"[RPC] {act_type} button clicked.")
                 
                 # Send a Modal (Type 9)
                 modal_payload = {
@@ -131,7 +118,6 @@ class RPC(commands.Cog):
                 return
 
             elif custom_id == "rpc_btn_clear":
-                print("[RPC] Clear button clicked.")
                 self.bot.locked_presence = False
                 await self.bot.change_presence(activity=None)
                 response = {"type": 4, "data": {"content": "🛑 RPC forcefully cleared.", "flags": 64}}
@@ -141,11 +127,10 @@ class RPC(commands.Cog):
 
         # --- MODAL SUBMITS (Type 5) ---
         if interaction_type == 5 and custom_id.startswith("rpc_modal_submit_"):
-            print(f"[RPC] Modal submitted for {custom_id}")
             act_type_str = custom_id.replace("rpc_modal_submit_", "")
             components = data.get("data", {}).get("components", [])
             name, details, state, image_url = None, None, None, None
-            
+
             for row in components:
                 for comp in row.get("components", []):
                     cid = comp.get("custom_id")
@@ -169,7 +154,6 @@ class RPC(commands.Cog):
                 ))
                 response = {"type": 4, "data": {"content": f"✅ RPC updated to **{act_type_str.title()} {name}**.", "flags": 64}}
             except Exception as e:
-                print(f"[RPC] Error updating presence: {e}")
                 response = {"type": 4, "data": {"content": f"❌ Failed to set RPC: {e}", "flags": 64}}
 
             async with aiohttp.ClientSession() as session:
@@ -216,6 +200,7 @@ class RPC(commands.Cog):
 
     @commands.command()
     async def stream(self, ctx, url: str, *, title):
+        """usage: .stream https://twitch.tv/you title here"""
         if not url.startswith("http"):
             return await ctx.send(f"{self.bot.config.get_emoji('error')} invalid url.")
         self.bot.locked_presence = True
@@ -224,12 +209,14 @@ class RPC(commands.Cog):
 
     @commands.command()
     async def customstatus(self, ctx, *, text):
+        """sets a custom text status"""
         self.bot.locked_presence = True
         await self.bot.change_presence(activity=discord.CustomActivity(name=text))
         await ctx.send(f"{self.bot.config.get_emoji('success')} custom status set to: {text}")
 
     @commands.command()
     async def clearstatus(self, ctx):
+        """wipes the active rpc"""
         self.bot.locked_presence = False
         await self.bot.change_presence(activity=None)
         await ctx.send(f"{self.bot.config.get_emoji('success')} presence completely wiped.")
@@ -239,6 +226,7 @@ class RPC(commands.Cog):
     # ==========================================
     @commands.command()
     async def startrotator(self, ctx, *, args):
+        """usage: .startrotator status1, status2 | 5m"""
         match = re.search(r'\|\s*(\d+)([smh])$', args)
         if not match: return await ctx.send("missing time. usage: `.startrotator status1, status2 | 5m`")
         amount, unit = int(match.group(1)), match.group(2)
@@ -270,4 +258,3 @@ class RPC(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(RPC(bot))
-    print("[RPC] Setup complete.")
