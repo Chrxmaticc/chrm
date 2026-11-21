@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 import asyncio
+import os
 import re
 from datetime import timedelta
 import json
@@ -21,16 +22,38 @@ def parse_duration(text):
     return int(hours or 0) * 3600 + int(minutes) * 60 + int(seconds)
 
 
+ASSET_PREFIX_RE = re.compile(r"^(?:mp|spotify|twitch|youtube):")
+
+
+def needs_proxy(url):
+    """True when a URL would land in the payload unresolved, i.e. render as a blank icon.
+
+    Clients only draw asset keys they can resolve: ``mp:``/``spotify:``/``twitch:``/
+    ``youtube:`` prefixed ids, Discord CDN links (which the library rewrites to ``mp:``),
+    or an application asset id. A bare ``https://`` URL is not one of those, so it has to
+    be traded for a media-proxy key first -- see ``RPC_APPLICATION_ID``.
+    """
+    if not url or not url.startswith(("http://", "https://")) or ASSET_PREFIX_RE.match(url):
+        return False
+    patterns = (
+        discord.ActivityAssets.MP_REGEX,
+        discord.ActivityAssets.TWITCH_REGEX,
+        discord.ActivityAssets.YOUTUBE_REGEX,
+        discord.ActivityAssets.SPOTIFY_REGEX,
+    )
+    return not any(pattern.match(url) for pattern in patterns)
+
+
 def format_image_url(url):
-    """Turn whatever was pasted into an asset Discord will actually render.
+    """Normalise a pasted image reference into the form the payload wants.
 
     * ``mp:`` / ``spotify:`` / ``twitch:`` / ``youtube:`` URIs pass through.
     * Spotify CDN links become ``spotify:<hash>`` -- the only form Spotify's CDN
       resolves.
-    * Anything else is sent as the plain URL. Discord proxies it and mints the
-      ``mp:`` id itself (gateway docs: "specify the URL as the field's value
-      when sending"). A hand-built ``mp:external/<md5>/...`` never resolves,
-      because that id is not derivable from the URL.
+    * Discord CDN / media-proxy links are left alone; ``ActivityAssets`` turns them
+      into ``mp:`` when the activity is built.
+    * Anything else stays a URL and must go through ``needs_proxy``/the media proxy,
+      because a raw URL is stored verbatim and the client has nothing to resolve.
     """
     if not url:
         return None
@@ -117,11 +140,11 @@ def presence_report(activities, extras=()):
             if value.startswith("spotify:"):
                 verdict = "ok, Spotify art"
             elif value.startswith("mp:"):
-                verdict = "mp: asset — only renders if Discord minted that id"
+                verdict = "mp: proxied asset — renders"
             elif value.startswith(("twitch:", "youtube:")):
                 verdict = "ok"
             elif value.startswith(("http://", "https://")):
-                verdict = "raw url — Discord proxies it on receipt"
+                verdict = "raw url — NOT rendered, needs the media proxy (app id)"
             else:
                 verdict = "application asset id"
             lines.append(f"{key} `{value}` — {verdict}")
@@ -318,20 +341,42 @@ class RPC(commands.Cog):
             start = discord.utils.utcnow()
         timestamps = discord.ActivityTimestamps(start=start, end=end) if (start or end) else None
 
-        assets = {}
-        if large_img:
-            assets["large_image"] = format_image_url(large_img)
-            if details: assets["large_text"] = details
-        small = options.get("small") or options.get("icon")
-        if small:
-            assets["small_image"] = format_image_url(small)
-            assets["small_text"] = name
+        large = format_image_url(large_img) if large_img else None
+        small = format_image_url(options.get("small") or options.get("icon")) or None
+
+        # A bare URL is stored verbatim and draws nothing, so trade it for an mp: key first.
+        raw = [url for url in (large, small) if needs_proxy(url)]
+        app_id = (options.get("app") or os.getenv("RPC_APPLICATION_ID") or "").strip()
+        if raw:
+            if not app_id.isdigit():
+                return await ctx.send(
+                    "icons need one more piece: Discord won't render a raw image URL. "
+                    "Add `RPC_APPLICATION_ID=<app id>` to `.env` (create any application at "
+                    "discord.com/developers/applications -> New Application, copy the Application ID) "
+                    "or pass `app=<app id>` in the command. Discord CDN links and `spotify:<hash>` "
+                    "already work without it."
+                )
+            try:
+                proxied = await self.bot.proxy_external_application_assets(int(app_id), *raw)
+            except Exception as e:
+                return await ctx.send(f"{self.bot.config.get_emoji('error')} media proxy failed: `{e}`")
+            resolved = dict(zip(raw, proxied))
+            large, small = resolved.get(large, large), resolved.get(small, small)
+
+        assets = None
+        if large or small:
+            # ActivityAssets, not a dict: its constructor rewrites CDN links into mp:
+            assets = discord.ActivityAssets(
+                large_image=large, large_text=details if large else None,
+                small_image=small, small_text=name if small else None,
+            )
 
         try:
             self.bot.locked_presence = True
             await self.bot.change_presence(activity=discord.Activity(
                 type=types[activity_type], name=name, details=details, state=state,
-                assets=assets if assets else None, timestamps=timestamps
+                assets=assets, timestamps=timestamps,
+                application_id=int(app_id) if (raw and app_id.isdigit()) else None,
             ))
             note = ""
             if seconds:
