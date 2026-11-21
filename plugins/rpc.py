@@ -2,23 +2,138 @@ import discord
 from discord.ext import commands
 import asyncio
 import re
-from datetime import datetime
-import hashlib
+from datetime import timedelta
 import json
 import aiohttp
 
+SPOTIFY_IMAGE_RE = re.compile(
+    r"https?://(?:i\.scdn\.co|image-cdn[-\w.]*\.spotifycdn\.com)/image/([A-Za-z0-9]+)"
+)
+DURATION_RE = re.compile(r"^(?:(\d+):)?(\d{1,2}):(\d{2})$")
+
+
+def parse_duration(text):
+    """'3:45' or '1:02:03' -> seconds, or None."""
+    match = DURATION_RE.match((text or "").strip())
+    if not match:
+        return None
+    hours, minutes, seconds = match.groups()
+    return int(hours or 0) * 3600 + int(minutes) * 60 + int(seconds)
+
+
 def format_image_url(url):
+    """Turn whatever was pasted into an asset Discord will actually render.
+
+    * ``mp:`` / ``spotify:`` / ``twitch:`` / ``youtube:`` URIs pass through.
+    * Spotify CDN links become ``spotify:<hash>`` -- the only form Spotify's CDN
+      resolves.
+    * Anything else is sent as the plain URL. Discord proxies it and mints the
+      ``mp:`` id itself (gateway docs: "specify the URL as the field's value
+      when sending"). A hand-built ``mp:external/<md5>/...`` never resolves,
+      because that id is not derivable from the URL.
+    """
     if not url:
         return None
-    if url.startswith("mp:") or url.startswith("spotify:"):
+    url = str(url).strip()
+    if url.startswith(("mp:", "spotify:", "twitch:", "youtube:")):
         return url
-    if "cdn.discordapp.com" in url or "media.discordapp.net" in url:
-        return url.split("?")[0]
-    if url.startswith("http"):
-        url_hash = hashlib.md5(url.encode()).hexdigest()
-        clean_url = url.replace("https://", "").replace("http://", "")
-        return f"mp:external/{url_hash}/https/{clean_url}"
+
+    match = SPOTIFY_IMAGE_RE.match(url)
+    if match:
+        return f"spotify:{match.group(1)}"
     return url
+
+
+def _chunks(text, limit=1900):
+    """Split long diagnostics under Discord's 2000-char message cap."""
+    while len(text) > limit:
+        cut = text.rfind("\n", 0, limit)
+        if cut <= 0:
+            cut = limit
+        yield text[:cut]
+        text = text[cut:].lstrip("\n")
+    if text:
+        yield text
+
+
+async def _probe(session, url):
+    """One-line liveness check: icons render only for a directly fetchable image."""
+    timeout = aiohttp.ClientTimeout(total=5)
+    try:
+        async with session.head(url, timeout=timeout, allow_redirects=False) as resp:
+            status, kind = resp.status, resp.headers.get("content-type", "?")
+        if status in (403, 405):  # host dislikes HEAD; try a real GET but do not read it
+            async with session.get(url, timeout=timeout, allow_redirects=False) as resp:
+                status, kind = resp.status, resp.headers.get("content-type", "?")
+    except Exception as e:
+        return f"`{url}` — unreachable ({e.__class__.__name__})"
+
+    if status in (301, 302, 303, 307, 308):
+        return f"`{url}` — {status} redirect, Discord will fetch the redirect target (may be a web page, not an image)"
+    if status != 200:
+        return f"`{url}` — {status}, Discord cannot proxy it"
+    if not kind.startswith("image/"):
+        return f"`{url}` — 200 but `{kind}`, not an image"
+    return f"`{url}` — 200 `{kind}`, fetchable"
+
+
+def presence_report(activities, extras=()):
+    """Readable checks for the live activity payloads we sent.
+
+    Anything the client needs in order to draw a progress bar or an album cover
+    has to be in this dict: flags 48, sync_id, start+end timestamps, and the
+    ``spotify:<hash>`` / resolvable asset id.
+    """
+    lines = []
+    for activity in activities:
+        data = activity.to_dict()
+        lines.append(f"**{data.get('name')}** · type {data.get('type')}")
+
+        flags = data.get("flags") or 0
+        if isinstance(activity, discord.Spotify):
+            state = "ok (sync|play)" if flags & 48 == 48 else "MISSING sync|play -> no bar"
+            lines.append(f"flags `{flags}` — {state}")
+            sync_id = data.get("sync_id")
+            if not sync_id:
+                lines.append("sync_id missing -> no Listen Along")
+            else:
+                shape = "ok" if len(sync_id) == 22 else "unexpected length -> no Listen Along"
+                lines.append(f"sync_id `{sync_id}` — {shape}")
+
+        timestamps = data.get("timestamps") or {}
+        start, end = timestamps.get("start"), timestamps.get("end")
+        if start and end:
+            lines.append(f"timestamps `{start}` -> `{end}` ({(end - start) / 1000:.1f}s) — ok, draws the bar")
+        elif start:
+            lines.append(f"timestamps start only (`{start}`) — counts up, no bar")
+        else:
+            lines.append("timestamps missing — no bar")
+
+        assets = data.get("assets") or {}
+        for key in ("large_image", "small_image"):
+            value = assets.get(key)
+            if not value:
+                continue
+            if value.startswith("spotify:"):
+                verdict = "ok, Spotify art"
+            elif value.startswith("mp:"):
+                verdict = "mp: asset — only renders if Discord minted that id"
+            elif value.startswith(("twitch:", "youtube:")):
+                verdict = "ok"
+            elif value.startswith(("http://", "https://")):
+                verdict = "raw url — Discord proxies it on receipt"
+            else:
+                verdict = "application asset id"
+            lines.append(f"{key} `{value}` — {verdict}")
+
+        if data.get("party"):
+            lines.append(f"party `{data['party']}`")
+        if data.get("application_id"):
+            lines.append(f"application_id `{data['application_id']}`")
+
+    lines.extend(extras)
+    payload = [activity.to_dict() for activity in activities]
+    return "\n".join(lines) + "\n```json\n" + json.dumps(payload, indent=1) + "\n```"
 
 class RPC(commands.Cog):
     def __init__(self, bot):
@@ -165,28 +280,52 @@ class RPC(commands.Cog):
     # ==========================================
     @commands.command()
     async def rpc(self, ctx, activity_type: str, *, args):
-        """advanced rpc. usage: .rpc playing name | details | state | image | elapsed"""
+        """rich presence, with icons and an optional progress bar.
+
+        usage: .rpc playing name | details | state | image | duration=3:45 | small=<icon url>
+        """
         activity_type = activity_type.lower()
-        parts = [p.strip() for p in args.split("|")]
-        name = parts[0] if len(parts) > 0 else "chrm"
 
-        timestamps = None
-        if "elapsed" in [p.lower() for p in parts]:
-            timestamps = {"start": int(datetime.now().timestamp())}
-            parts.pop()
+        # Positional fields keep their old order; key=value tokens can sit anywhere.
+        parts, options = [], {}
+        for chunk in (p.strip() for p in args.split("|")):
+            key, sep, value = chunk.partition("=")
+            key = key.strip().lower()
+            if sep and key in ("duration", "small", "icon", "elapsed"):
+                options[key] = value.strip()
+            elif chunk.lower() == "elapsed":
+                options["elapsed"] = "1"
+            else:
+                parts.append(chunk)
 
-        large_img = parts[3] if len(parts) > 3 and parts[3] else None
+        name = parts[0] if parts and parts[0] else "chrm"
         details = parts[1] if len(parts) > 1 and parts[1] else None
         state = parts[2] if len(parts) > 2 and parts[2] else None
+        large_img = parts[3] if len(parts) > 3 and parts[3] else None
 
         types = {"playing": discord.ActivityType.playing, "watching": discord.ActivityType.watching, "listening": discord.ActivityType.listening, "competing": discord.ActivityType.competing}
         if activity_type not in types:
             return await ctx.send(f"{self.bot.config.get_emoji('error')} invalid type.")
 
+        # Start *and* end is what draws the bar; start alone only counts up. Datetimes,
+        # because discord.py converts them to the milliseconds the gateway expects.
+        seconds = parse_duration(options.get("duration"))
+        start = end = None
+        if seconds:
+            start = discord.utils.utcnow()
+            end = start + timedelta(seconds=seconds)
+        elif options.get("elapsed"):
+            start = discord.utils.utcnow()
+        timestamps = discord.ActivityTimestamps(start=start, end=end) if (start or end) else None
+
         assets = {}
         if large_img:
             assets["large_image"] = format_image_url(large_img)
             if details: assets["large_text"] = details
+        small = options.get("small") or options.get("icon")
+        if small:
+            assets["small_image"] = format_image_url(small)
+            assets["small_text"] = name
 
         try:
             self.bot.locked_presence = True
@@ -194,9 +333,36 @@ class RPC(commands.Cog):
                 type=types[activity_type], name=name, details=details, state=state,
                 assets=assets if assets else None, timestamps=timestamps
             ))
-            await ctx.send(f"{self.bot.config.get_emoji('success')} rpc updated: {activity_type} **{name}**")
+            note = ""
+            if seconds:
+                note = f" · bar over {options.get('duration')}"
+            elif start:
+                note = " · counting up"
+            await ctx.send(f"{self.bot.config.get_emoji('success')} rpc updated: {activity_type} **{name}**{note}")
         except Exception as e:
             await ctx.send(f"{self.bot.config.get_emoji('error')} error: {e}")
+
+    @commands.command(name="presencedump", aliases=["pd"])
+    async def presencedump(self, ctx):
+        """prints the exact presence payload we send, plus bar/art checks (diagnostic)"""
+        activities = list(self.bot.activities)
+        if not activities:
+            return await ctx.send("no activity set right now. run `.spotify ...` or `.rpc ...` first.")
+
+        urls = []
+        for activity in activities:
+            for value in (activity.to_dict().get("assets") or {}).values():
+                if isinstance(value, str) and value.startswith(("http://", "https://")) and value not in urls:
+                    urls.append(value)
+
+        extras = []
+        if urls:
+            async with aiohttp.ClientSession(headers={"User-Agent": "chrm/1.0"}) as session:
+                checks = await asyncio.gather(*(_probe(session, url) for url in urls))
+            extras = ["", "**asset reachability**"] + list(checks)
+
+        for chunk in _chunks(presence_report(activities, extras)):
+            await ctx.send(chunk)
 
     @commands.command()
     async def stream(self, ctx, url: str, *, title):
