@@ -86,9 +86,6 @@ class ChrmInstance(commands.Bot):
         self.token = token
         self.config = ConfigManager(user_config_data)
         self.locked_presence = False
-        
-        # 🚨 CRITICAL: Registers the core command so it actually works
-        self.add_command(self.toggledelay)
 
     async def human_delay(self):
         settings = self.config.data.get("settings", {})
@@ -101,62 +98,6 @@ class ChrmInstance(commands.Bot):
         await self.human_delay()
         await super().invoke(ctx)
 
-    # ==========================================
-    # THE TOGGLEDELAY COMMAND
-    # ==========================================
-    @commands.command()
-    async def toggledelay(self, ctx, arg1: str = None, arg2: str = None):
-        """toggles or sets the delay. usage: .toggledelay (toggle), .toggledelay 3 (fixed), .toggledelay 1 12 (random)"""
-        if "settings" not in self.config.data:
-            self.config.data["settings"] = {}
-
-        new_state = self.config.data["settings"].get("delays_enabled", True)
-        min_d = self.config.data["settings"].get("delay_min", 1.5)
-        max_d = self.config.data["settings"].get("delay_max", 4.5)
-
-        if not arg1:
-            new_state = not new_state
-        else:
-            new_state = True
-            try:
-                if arg2:
-                    min_d = float(arg1)
-                    max_d = float(arg2)
-                else:
-                    min_d = float(arg1)
-                    max_d = float(arg1)
-            except ValueError:
-                error = self.config.get_emoji("error")
-                return await ctx.send(f"{error} invalid numbers. usage: `.toggledelay 3` or `.toggledelay 1 12`")
-
-        if min_d > max_d:
-            min_d, max_d = max_d, min_d
-
-        self.config.data["settings"]["delays_enabled"] = new_state
-        self.config.data["settings"]["delay_min"] = min_d
-        self.config.data["settings"]["delay_max"] = max_d
-
-        try:
-            async with aiohttp.ClientSession() as session:
-                payload = {"settings": {
-                    "delays_enabled": new_state,
-                    "delay_min": min_d,
-                    "delay_max": max_d
-                }}
-                async with session.patch(f"{BASE_API}/api/user/{self.user_id}", json=payload) as resp:
-                    pass
-        except Exception as e:
-            print(f"Failed to save delay settings to API: {e}")
-
-        emoji = self.config.get_emoji("success")
-        if new_state:
-            if min_d == max_d:
-                await ctx.send(f"{emoji} human delay set to fixed **{min_d}s**")
-            else:
-                await ctx.send(f"{emoji} human delay randomized between **{min_d}s** and **{max_d}s**")
-        else:
-            await ctx.send(f"{emoji} human delay is now **OFF**")
-
     async def setup_hook(self):
         if os.path.exists('./plugins'):
             for filename in os.listdir('./plugins'):
@@ -164,7 +105,7 @@ class ChrmInstance(commands.Bot):
                     try:
                         await self.load_extension(f'plugins.{filename[:-3]}')
                     except Exception as e:
-                        print(f"[PLUGIN ERROR] Failed to load {filename}: {e}")
+                        print(f"[PLUGIN ERROR] Failed to load {filename} for {self.user_id}: {e}")
 
     async def on_ready(self):
         print(f"✅ [ONLINE] logged in as {self.user.name} (id: {self.user_id})")
@@ -174,12 +115,31 @@ class ChrmInstance(commands.Bot):
         rpc_data = settings.get("rpc")
         if rpc_data and rpc_data.get("name"):
             try:
+                # --- SPOTIFY PROGRESS BAR LOGIC ---
+                if rpc_data.get("type") == "listening" and rpc_data.get("name") == "Spotify":
+                    timestamps = {
+                        "start": rpc_data.get("start_time"),
+                        "end": rpc_data.get("end_time")
+                    }
+                    self.locked_presence = True
+                    await self.change_presence(activity=discord.Activity(
+                        type=discord.ActivityType.listening,
+                        name="Spotify",
+                        details=rpc_data.get("details"),
+                        state=rpc_data.get("state"),
+                        timestamps=timestamps
+                    ))
+                    print(f"[RPC] Applied Spotify spoof for {self.user_id}")
+                    return
+
+                # --- STANDARD RPC LOGIC ---
                 types = {
                     "playing": discord.ActivityType.playing,
                     "watching": discord.ActivityType.watching,
                     "listening": discord.ActivityType.listening,
                     "competing": discord.ActivityType.competing
                 }
+                
                 assets = {}
                 if rpc_data.get("image_url"):
                     assets["large_image"] = rpc_data["image_url"]
@@ -278,8 +238,9 @@ async def sync_loop():
     while True:
         start_time = time.time()
         
+        # MEMORY WATCHDOG
         process = psutil.Process(os.getpid())
-        ram_usage = process.memory_info().rss / 1024 / 1024
+        ram_usage = process.memory_info().rss / 1024 / 1024 # In MB
         
         if ram_usage > 460: 
             print(f"🚨 [CRITICAL] RAM USAGE AT {ram_usage:.1f}MB. Skipping sync to prevent crash.")
@@ -298,6 +259,7 @@ async def sync_loop():
         
         api_errors = 0 
 
+        # Clean up ghost instances
         for uid in list(running_bots.keys()):
             if running_bots[uid].is_closed():
                 del running_bots[uid]
