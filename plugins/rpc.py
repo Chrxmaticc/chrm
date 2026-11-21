@@ -344,24 +344,26 @@ class RPC(commands.Cog):
         large = format_image_url(large_img) if large_img else None
         small = format_image_url(options.get("small") or options.get("icon")) or None
 
-        # A bare URL is stored verbatim and draws nothing, so trade it for an mp: key first.
-        raw = [url for url in (large, small) if needs_proxy(url)]
+        # With an application id, send every URL through the media proxy: mp:external/...
+        # is the one form the docs say a plain gateway presence can use. Without one, the
+        # library still rewrites CDN links into mp:avatars/... (fetchable, but not the
+        # documented presence form) and arbitrary hosts cannot be resolved at all.
+        raw = [url for url in (large, small) if url and url.startswith(("http://", "https://"))]
         app_id = (options.get("app") or os.getenv("RPC_APPLICATION_ID") or "").strip()
-        if raw:
-            if not app_id.isdigit():
-                return await ctx.send(
-                    "icons need one more piece: Discord won't render a raw image URL. "
-                    "Add `RPC_APPLICATION_ID=<app id>` to `.env` (create any application at "
-                    "discord.com/developers/applications -> New Application, copy the Application ID) "
-                    "or pass `app=<app id>` in the command. Discord CDN links and `spotify:<hash>` "
-                    "already work without it."
-                )
+        if raw and app_id.isdigit():
             try:
                 proxied = await self.bot.proxy_external_application_assets(int(app_id), *raw)
             except Exception as e:
                 return await ctx.send(f"{self.bot.config.get_emoji('error')} media proxy failed: `{e}`")
             resolved = dict(zip(raw, proxied))
             large, small = resolved.get(large, large), resolved.get(small, small)
+        elif any(needs_proxy(url) for url in raw):
+            return await ctx.send(
+                "that image host can't be resolved by the client. Add `RPC_APPLICATION_ID=<app id>` "
+                "to `.env` (create any application at discord.com/developers/applications -> New "
+                "Application, copy the Application ID) or pass `app=<app id>` in the command so it "
+                "can go through Discord's media proxy."
+            )
 
         assets = None
         if large or small:
