@@ -1,68 +1,85 @@
-"""Device / status-platform spoof.
+"""Client-platform spoof.
 
-Two different things are called "device" in Discord, and only one of them is a
-client:
+The icon Discord draws next to your name (desktop / browser / phone / VR headset /
+console) is not something a presence can ask for. It comes from the ``properties``
+of the gateway IDENTIFY packet (op 2), sent once per connection, and the server maps
+the ``browser`` string onto a platform slot:
 
-* the small desktop/mobile/web icon next to the account. That comes from the
-  gateway **IDENTIFY** properties (``os`` / ``browser`` / ``device``), which is why
-  this command has always had to reconnect: the properties are read once, at
-  handshake time. ``apply_gateway_platform`` rewrites them on the ``Headers`` object
-  the websocket reads, before ``op 2`` goes out -- see ``main.py``'s ``setup_hook``.
-* the platform icon on an **activity** (phone, controller, VR headset). A user token
-  can never be a VR or console *client* -- Discord has no such client -- so ``vr``,
-  ``xbox`` and ``playstation`` are drawn there instead, via ``Activity.platform``.
-  ``ChrmInstance.change_presence`` stamps it on every presence this engine sends, so
-  the badge survives later ``.rpc`` / ``.spotify`` / dashboard changes.
+    "Discord Client"    -> desktop
+    "Discord Android"   -> mobile
+    "Discord iOS"       -> mobile
+    "Discord VR"        -> vr        (on os Android -- the Quest app's slot)
+    "Discord Embedded"  -> embedded  (Xbox / PlayStation)
+    anything else       -> web       (what this engine gets by default, because
+                                      discord.py-self logs in with Chrome headers)
+
+So ``.device`` writes the choice to the dashboard and drops the connection. The next
+login reads it back in ``setup_hook`` and rewrites the ``Headers`` object the
+websocket reads for ``op 2``, before the socket opens. It has to be a reconnect:
+a RESUME re-uses the session and never repeats the properties.
+
+Slot list, for reference: https://docs.discord.com/developers/events/gateway-events
+(the ``client_status`` object has a documented ``vr`` field).
 """
 import base64
 import json
 
 import aiohttp
-import discord
 from discord.ext import commands
 
 from api_base import BASE_API
 
-#: IDENTIFY properties per device. Discord maps these onto the client icon.
+_PHONE = {"os": "Android", "browser": "Discord Android", "device": "Discord Android"}
+_HEADSET = {"os": "Android", "browser": "Discord VR", "device": "Meta Quest 3"}
+_PLAYSTATION = {"os": "Playstation", "browser": "Discord Embedded", "device": "PlayStation 5"}
+_DESKTOP = {"os": "Windows", "browser": "Discord Client", "device": "Discord Client"}
+
+#: IDENTIFY properties per device. ``browser`` is the string that picks the slot.
 DEVICE_PROPERTIES = {
-    "windows": {"os": "Windows", "browser": "Discord Client", "device": ""},
-    "desktop": {"os": "Windows", "browser": "Discord Client", "device": ""},
-    "macos": {"os": "Mac OS X", "browser": "Discord Client", "device": ""},
-    "linux": {"os": "Linux", "browser": "Discord Client", "device": ""},
-    "ios": {"os": "iOS", "browser": "Discord iOS", "device": "iPhone"},
-    "android": {"os": "Android", "browser": "Discord Android", "device": "Android"},
-    "mobile": {"os": "Android", "browser": "Discord Android", "device": "Android"},
+    "desktop": _DESKTOP,
+    "windows": _DESKTOP,
+    "macos": {"os": "Mac OS X", "browser": "Discord Client", "device": "Discord Client"},
+    "linux": {"os": "Linux", "browser": "Discord Client", "device": "Discord Client"},
+    "web": {"os": "Windows", "browser": "Chrome", "device": ""},
+    "mobile": _PHONE,
+    "android": _PHONE,
+    "ios": {"os": "iOS", "browser": "Discord iOS", "device": "iPhone 15"},
+    "vr": _HEADSET,
+    "quest": _HEADSET,
+    "meta": _HEADSET,
+    "console": _PLAYSTATION,
+    "playstation": _PLAYSTATION,
+    "ps5": _PLAYSTATION,
+    "xbox": {"os": "Xbox", "browser": "Discord Embedded", "device": "Xbox Series X"},
 }
 
-#: Platform icon drawn on the activity card.
-DEVICE_BADGES = {
-    "windows": discord.ActivityPlatform.desktop,
-    "desktop": discord.ActivityPlatform.desktop,
-    "macos": discord.ActivityPlatform.desktop,
-    "linux": discord.ActivityPlatform.desktop,
-    "ios": discord.ActivityPlatform.ios,
-    "android": discord.ActivityPlatform.android,
-    "mobile": discord.ActivityPlatform.android,
-    "vr": discord.ActivityPlatform.meta_quest,
-    "quest": discord.ActivityPlatform.meta_quest,
-    "playstation": discord.ActivityPlatform.ps5,
-    "ps5": discord.ActivityPlatform.ps5,
-    "xbox": discord.ActivityPlatform.xbox,
+#: Which client_status slot each option lands in -- what Discord will draw.
+DEVICE_SLOTS = {
+    "desktop": "desktop",
+    "windows": "desktop",
+    "macos": "desktop",
+    "linux": "desktop",
+    "web": "web",
+    "mobile": "mobile",
+    "android": "mobile",
+    "ios": "mobile",
+    "vr": "VR",
+    "quest": "VR",
+    "meta": "VR",
+    "console": "console",
+    "playstation": "console",
+    "ps5": "console",
+    "xbox": "console",
 }
-
-
-def device_badge(platform):
-    """``ActivityPlatform`` for a saved ``device_platform`` value, or None."""
-    return DEVICE_BADGES.get((platform or "").strip().lower())
 
 
 def apply_gateway_platform(client, platform):
-    """Make this session identify as ``platform``. Returns True when anything changed.
+    """Make this session identify as ``platform``. Returns True when it did.
 
     ``Client.login`` builds ``http.headers`` before ``setup_hook`` runs, and
     ``DiscordWebSocket.from_client`` keeps a reference to that very object and reads
-    it for ``op 2`` -- so updating ``super_properties`` here is enough, and the
-    base64 blob REST sends is regenerated too so both halves agree.
+    it for ``op 2`` -- so updating ``super_properties`` here is enough. The base64
+    blob REST sends is regenerated from the same dict so both halves agree.
     """
     props = DEVICE_PROPERTIES.get((platform or "").strip().lower())
     if not props:
@@ -91,24 +108,22 @@ class Device(commands.Cog):
 
     @commands.command()
     async def device(self, ctx, platform: str):
-        """spoofs your client device or a status platform. usage: .device mobile / .device vr"""
+        """spoofs the client icon others see. usage: .device vr / .device mobile"""
         platform = platform.strip().lower()
-        options = sorted(set(DEVICE_PROPERTIES) | set(DEVICE_BADGES))
 
         error = self.bot.config.get_emoji("error")
         success = self.bot.config.get_emoji("success")
         loading = self.bot.config.get_emoji("loading")
 
-        if platform not in options:
-            return await ctx.send(f"{error} invalid platform. choose from: `{', '.join(options)}`")
+        if platform not in DEVICE_PROPERTIES:
+            options = ", ".join(sorted(DEVICE_PROPERTIES))
+            return await ctx.send(f"{error} invalid platform. choose from: `{options}`")
 
-        client_spoof = platform in DEVICE_PROPERTIES
-        badge = device_badge(platform)
+        slot = DEVICE_SLOTS[platform]
+        await ctx.send(f"{loading} switching device to **{platform}** (`{slot}` icon)...")
 
-        await ctx.send(f"{loading} switching device to **{platform}**...")
-
-        # 1. Save it first: the engine rereads this before every IDENTIFY, so the
-        #    setting has to be on the dashboard before the reconnect below.
+        # Save it first: the engine rereads this before every IDENTIFY, so it has to
+        # be on the dashboard before the reconnect below.
         self.bot.config.data.setdefault("settings", {})["device_platform"] = platform
         try:
             async with aiohttp.ClientSession() as session:
@@ -119,24 +134,13 @@ class Device(commands.Cog):
         except Exception as e:
             print(f"[DEVICE] API error: {e}")
 
-        # 2. Re-send whatever is showing so the badge is live now, not next restart.
-        activity = next(iter(self.bot.activities), None)
-        if activity is not None and badge is not None:
-            try:
-                await self.bot.change_presence(activity=activity)
-            except Exception as e:
-                print(f"[DEVICE] Failed to re-send activity: {e}")
+        print(f"[DEVICE] {self.bot.user_id} -> {platform}: {DEVICE_PROPERTIES[platform]}")
 
-        # 3. VR / consoles have no client session to spoof -- the activity icon is
-        #    the whole feature, so do not take the account offline for it.
-        if not client_spoof:
-            return await ctx.send(
-                f"{success} **{platform}** badge is on your status.\n"
-                "*discord has no vr/console client for a user account, so this is the "
-                "activity icon, not the client tag.*"
-            )
-
-        await ctx.send(f"{success} client spoof saved. engine will be back online in ~30 seconds.")
+        await ctx.send(
+            f"{success} **{platform}** saved, expect the `{slot}` icon.\n"
+            "*reconnecting now -- the new session sends the properties at IDENTIFY, "
+            "so the icon shows up in ~30s.*"
+        )
         await self.bot.close()
 
 
