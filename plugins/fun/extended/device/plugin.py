@@ -24,10 +24,9 @@ Slot list, for reference: https://docs.discord.com/developers/events/gateway-eve
 import base64
 import json
 
-import aiohttp
 from discord.ext import commands
 
-from api_base import BASE_API
+from core import api
 from .helpers import _PHONE, _HEADSET, _PLAYSTATION, _DESKTOP, DEVICE_PROPERTIES, DEVICE_SLOTS, apply_gateway_platform
 
 
@@ -50,16 +49,16 @@ class DeviceMixin:
         await ctx.send(f"{loading} switching device to **{platform}** (`{slot}` icon)...")
 
         # Save it first: the engine rereads this before every IDENTIFY, so it has to
-        # be on the dashboard before the reconnect below.
-        self.bot.config.data.setdefault("settings", {})["device_platform"] = platform
-        try:
-            async with aiohttp.ClientSession() as session:
-                url = f"{self.base_api}/api/user/{self.bot.user_id}"
-                async with session.patch(url, json={"settings": {"device_platform": platform}}) as resp:
-                    if resp.status != 200:
-                        print(f"[DEVICE] Failed to save device to DB: {resp.status}")
-        except Exception as e:
-            print(f"[DEVICE] API error: {e}")
+        # be on the dashboard before the reconnect below. It has to go through
+        # core.api: the dashboard rejects an unauthenticated PATCH, and that helper
+        # attaches the engine secret. A bare aiohttp PATCH here used to 401, get
+        # logged, and then the reconnect identified with the old (web) icon -- so
+        # the choice never stuck for anyone.
+        if not await api.save_settings(self.bot, device_platform=platform):
+            return await ctx.send(
+                f"{error} could not save **{platform}** -- the dashboard refused the "
+                "write, so the device did not change. try again in a moment."
+            )
 
         print(f"[DEVICE] {self.bot.user_id} -> {platform}: {DEVICE_PROPERTIES[platform]}")
 
