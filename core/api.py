@@ -20,6 +20,7 @@ so setting only ``API_URL`` sent their writes to a different host than everyone
 else's, silently.
 """
 from typing import Any, Optional
+import os
 
 import aiohttp
 
@@ -57,8 +58,14 @@ async def request(method: str, path: str, *, tag: str = "API", **kwargs: Any):
     dashboard must not take a command down with it.
     """
     url = f"{BASE_API}{path}"
+    # chrm-api accepts the engine's shared secret in place of a dashboard key, so
+    # cog writes keep working after the dashboard endpoints were locked down.
+    headers = dict(kwargs.pop("headers", None) or {})
+    secret = os.environ.get("ENGINE_SECRET")
+    if secret:
+        headers.setdefault("x-engine-secret", secret)
     try:
-        async with session().request(method, url, **kwargs) as resp:
+        async with session().request(method, url, headers=headers, **kwargs) as resp:
             if resp.status >= 400:
                 print(f"[{tag}] {method} {path} -> {resp.status}")
                 return None

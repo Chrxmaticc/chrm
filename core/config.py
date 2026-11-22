@@ -67,7 +67,35 @@ FEATURES = Features
 
 
 class Config:
-    """One bot instance's configuration: config.json overlaid by the dashboard."""
+    """One bot instance's configuration: config.json overlaid by the dashboard.
+
+    The dashboard stores one JSON blob per user (``users.settings``). That blob is
+    the only thing the sync loop can hand us, so :meth:`apply_blob` defines the
+    contract. Three shapes exist in the wild and all of them are accepted:
+
+    canonical (what the dashboard writes now)::
+
+        {"prefixes": ["."], "delays_enabled": true, "delay_min": 1.5,
+         "delay_max": 4.5, "features": {"afk": {...}}, "rpc": {...}}
+
+    whole-document (what the old mock server seeded)::
+
+        {"settings": {...}, "emojis": {...}, "features": {...}}
+
+    legacy flat (first dashboard version)::
+
+        {"prefix": ".", "delays_enabled": true, "afk": {...},
+         "autorespond": {...}, "autoreact": {...}}
+
+    Keys named like a namespace are merged into that namespace; feature keys are
+    hoisted into ``features``; everything else lands under ``settings``, which is
+    what ``get_setting``/``get_prefixes`` read.
+    """
+
+    #: declared feature keys, so cog writes survive a restart through the blob
+    FEATURE_KEYS = ("afk", "autorespond", "autoreact", "custom_status")
+    #: blob keys that address a whole namespace instead of a single setting
+    NAMESPACES = ("settings", "features", "emojis")
 
     def __init__(self, user_data=None, path: str = CONFIG_PATH):
         try:
@@ -77,10 +105,72 @@ class Config:
             print(f"[CONFIG] {path} unreadable ({exc}); using class defaults")
             self.data = {}
 
-        if user_data:
-            self.data.update(user_data)
+        self.blob = None
+        self.apply_user(user_data)
+
+    # ------------------------------------------------------------ dashboard
+    def apply_user(self, user_data) -> None:
+        """Apply an ``/api/engine/bots`` record (or a bare blob)."""
+        if not isinstance(user_data, dict) or not user_data:
+            self._with_defaults()
+            return
+
+        # An engine record carries the blob under "settings" next to transport
+        # fields; those must not leak into the config document.
+        if "settings" in user_data and any(
+            key in user_data for key in ("token", "discord_id", "is_active")
+        ):
+            blob = user_data.get("settings") or {}
+        else:
+            blob = user_data
+        self.apply_blob(blob)
+
+    def apply_blob(self, blob: dict) -> None:
+        """Merge a dashboard settings blob into the config document."""
+        if not isinstance(blob, dict):
+            self._with_defaults()
+            return
+
+        self.blob = json.loads(json.dumps(blob))
+        scoped = {}
+
+        for key, value in blob.items():
+            if key in self.NAMESPACES and isinstance(value, dict):
+                target = self.data.setdefault(key, {})
+                for inner_key, inner_value in value.items():
+                    if isinstance(inner_value, dict) and isinstance(target.get(inner_key), dict):
+                        target[inner_key].update(inner_value)
+                    else:
+                        target[inner_key] = inner_value
+            elif key in self.FEATURE_KEYS:
+                self.data.setdefault("features", {})[key] = value
+            else:
+                scoped[key] = value
+
+        # "prefix": "!" -> "prefixes": ["!"] (first dashboard version)
+        prefix = scoped.pop("prefix", None)
+        if "prefixes" not in scoped and prefix:
+            scoped["prefixes"] = prefix if isinstance(prefix, list) else [prefix]
+
+        if scoped:
+            self.data.setdefault("settings", {}).update(scoped)
 
         self._with_defaults()
+
+    def update_from_dashboard(self, user_data: dict) -> bool:
+        """Re-apply a user record. Returns True only when the blob changed."""
+        if not isinstance(user_data, dict):
+            return False
+        if "settings" in user_data and any(
+            key in user_data for key in ("token", "discord_id", "is_active")
+        ):
+            blob = user_data.get("settings") or {}
+        else:
+            blob = user_data
+        if blob == self.blob:
+            return False
+        self.apply_blob(blob)
+        return True
 
     # ------------------------------------------------------------ defaults
     def _with_defaults(self):
@@ -119,12 +209,6 @@ class Config:
         if "." not in prefixes:
             prefixes.append(".")
         return prefixes
-
-    def update_from_dashboard(self, user_data: dict) -> None:
-        """Merge the settings blob the sync loop received (shallow, like the API)."""
-        if user_data:
-            self.data.update(user_data)
-            self._with_defaults()
 
     def __repr__(self) -> str:
         return f"<Config prefixes={self.get_prefixes()} features={sorted(self.data.get('features', {}))}>"

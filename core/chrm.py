@@ -347,9 +347,9 @@ async def sync_loop():
 
             if is_active and uid in running_bots:
                 bot = running_bots[uid]
-                if bot.config.data != user:
-                    bot.config.update_from_dashboard(user)
-                    
+                # update_from_dashboard returns True only when the blob actually
+                # changed, so this no longer re-applies every 3 seconds.
+                if bot.config.update_from_dashboard(user):
                     bot.command_prefix = bot.config.get_prefixes()
                     await bot.apply_dashboard_rpc(user.get("settings", {}))
 
