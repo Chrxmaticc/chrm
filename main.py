@@ -13,10 +13,26 @@ import threading
 import aiohttp
 import discord
 from discord.ext import commands
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Load .env before anything reads os.environ (PORT, API_URL, ENGINE_SECRET).
 load_dotenv()
+
+
+def _timestamp(value):
+    """Dashboard timestamps arrive in seconds or milliseconds; return an aware datetime."""
+    if not value:
+        return None
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    if value < 1e11:  # seconds, not milliseconds
+        value *= 1000
+    try:
+        return datetime.fromtimestamp(value / 1000, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
 
 # ==========================================
 # 1. WEB SERVER FOR RENDER
@@ -86,6 +102,7 @@ class ChrmInstance(commands.Bot):
         self.token = token
         self.config = ConfigManager(user_config_data)
         self.locked_presence = False
+        self._ready_once = False
 
     async def human_delay(self):
         settings = self.config.data.get("settings", {})
@@ -99,6 +116,15 @@ class ChrmInstance(commands.Bot):
         await super().invoke(ctx)
 
     async def setup_hook(self):
+        # The device icon is decided by the IDENTIFY properties, and login() has
+        # already built http.headers by now: the websocket reads that same object
+        # for op 2, so this has to land before the socket connects.
+        from plugins.device import apply_gateway_platform
+
+        platform = self.config.data.get("settings", {}).get("device_platform")
+        if platform and apply_gateway_platform(self, platform):
+            print(f"[DEVICE] {self.user_id} identifying as {platform}")
+
         if os.path.exists('./plugins'):
             for filename in os.listdir('./plugins'):
                 if filename.endswith('.py') and not filename.startswith('__'):
@@ -109,25 +135,64 @@ class ChrmInstance(commands.Bot):
 
     async def on_ready(self):
         print(f"✅ [ONLINE] logged in as {self.user.name} (id: {self.user_id})")
-        await self.apply_dashboard_rpc(self.config.data.get("settings", {}))
+
+        # on_ready fires on every reconnect. Re-applying the dashboard RPC there would
+        # overwrite a presence the user set by hand (.rpc, .spotify, .customstatus...),
+        # so only the first ready (or a free presence slot) takes the dashboard's version.
+        first_ready = not self._ready_once
+        self._ready_once = True
+        if first_ready or not self.locked_presence:
+            await self.apply_dashboard_rpc(self.config.data.get("settings", {}))
+
+    async def _dashboard_assets(self, url, large_text=None):
+        """Turn a dashboard icon into (drawable assets, app id it was minted under).
+
+        A raw URL in the payload draws nothing, so it has to become an ``mp:`` key
+        first: ``ActivityAssets`` handles CDN links, and any other host needs
+        ``RPC_APPLICATION_ID`` so Discord's media proxy will mint one.
+        """
+        from plugins.rpc import format_image_url
+
+        value = format_image_url(url)
+        if not value:
+            return None, None
+
+        app_id = None
+        if value.startswith(("http://", "https://")):
+            raw = (os.getenv("RPC_APPLICATION_ID") or "").strip()
+            if raw.isdigit():
+                try:
+                    value = (await self.proxy_external_application_assets(int(raw), value))[0]
+                    app_id = int(raw)
+                except Exception as e:
+                    print(f"[RPC] media proxy failed for {self.user_id}: {e}")
+
+        return discord.ActivityAssets(large_image=value, large_text=large_text), app_id
 
     async def apply_dashboard_rpc(self, settings):
         rpc_data = settings.get("rpc")
         if rpc_data and rpc_data.get("name"):
             try:
-                # --- SPOTIFY PROGRESS BAR LOGIC ---
+                # --- SPOTIFY: sync_id + flags 48 + start/end is what draws the bar ---
                 if rpc_data.get("type") == "listening" and rpc_data.get("name") == "Spotify":
-                    timestamps = {
-                        "start": rpc_data.get("start_time"),
-                        "end": rpc_data.get("end_time")
-                    }
+                    assets, _ = await self._dashboard_assets(
+                        rpc_data.get("album_image") or rpc_data.get("image_url")
+                    )
+                    track_id = str(rpc_data.get("track_id") or rpc_data.get("sync_id") or "").replace("spotify:track:", "")
                     self.locked_presence = True
                     await self.change_presence(activity=discord.Activity(
                         type=discord.ActivityType.listening,
                         name="Spotify",
                         details=rpc_data.get("details"),
                         state=rpc_data.get("state"),
-                        timestamps=timestamps
+                        sync_id=track_id or None,
+                        application_id=409155198293508107,
+                        flags=discord.ActivityFlags(sync=True, play=True) if track_id else None,
+                        assets=assets,
+                        timestamps=discord.ActivityTimestamps(
+                            start=_timestamp(rpc_data.get("start_time")),
+                            end=_timestamp(rpc_data.get("end_time")),
+                        ) or None,
                     ))
                     print(f"[RPC] Applied Spotify spoof for {self.user_id}")
                     return
@@ -140,15 +205,13 @@ class ChrmInstance(commands.Bot):
                     "competing": discord.ActivityType.competing
                 }
                 
-                assets = {}
-                if rpc_data.get("image_url"):
-                    assets["large_image"] = rpc_data["image_url"]
-                    if rpc_data.get("details"):
-                        assets["large_text"] = rpc_data["details"]
+                assets, asset_app_id = await self._dashboard_assets(
+                    rpc_data.get("image_url"), rpc_data.get("details")
+                )
 
                 timestamps = None
                 if rpc_data.get("elapsed"):
-                    timestamps = {"start": int(datetime.now().timestamp())}
+                    timestamps = discord.ActivityTimestamps(start=datetime.now(timezone.utc))
 
                 self.locked_presence = True
                 await self.change_presence(activity=discord.Activity(
@@ -156,7 +219,8 @@ class ChrmInstance(commands.Bot):
                     name=rpc_data["name"],
                     details=rpc_data.get("details"),
                     state=rpc_data.get("state"),
-                    assets=assets if assets else None,
+                    assets=assets,
+                    application_id=asset_app_id,
                     timestamps=timestamps
                 ))
             except Exception as e:
