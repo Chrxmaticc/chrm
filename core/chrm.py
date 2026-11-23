@@ -91,6 +91,8 @@ class ChrmInstance(commands.Bot):
         self.token = token
         self.locked_presence = False
         self._ready_once = False
+        #: extension -> why it failed to load, shown by .sysinfo
+        self.load_errors = {}
 
     async def human_delay(self):
         settings = self.config.data.get("settings", {})
@@ -119,7 +121,12 @@ class ChrmInstance(commands.Bot):
             try:
                 await self.load_extension(extension)
             except Exception as e:
-                print(f"[PLUGIN ERROR] Failed to load {extension} for {self.user_id}: {e}")
+                # A package that fails to import takes every command in it with it,
+                # and a missing command is answered with silence (CommandNotFound is
+                # ignored), so the reason has to survive somewhere visible: .sysinfo.
+                failure = f"{type(e).__name__}: {e}"
+                self.load_errors[extension] = failure
+                print(f"[PLUGIN ERROR] Failed to load {extension} for {self.user_id}: {failure}")
 
     async def on_ready(self):
         print(f"✅ [ONLINE] logged in as {self.user.name} (id: {self.user_id})")
