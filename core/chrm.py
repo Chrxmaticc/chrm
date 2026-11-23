@@ -16,7 +16,7 @@ import gc
 import psutil
 from dotenv import load_dotenv
 from api_base import BASE_API
-from core import api  # shared aiohttp session + dashboard writes
+from core import api, prefs  # shared aiohttp session + dashboard writes
 from core.client.loader import FRAMEWORK_EXTENSIONS, iter_extensions
 from core.config import Config
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -102,6 +102,29 @@ class ChrmInstance(commands.Bot):
             await asyncio.sleep(random.uniform(min_d, max_d))
 
     async def invoke(self, ctx):
+        command = getattr(ctx, "command", None)
+        names = {getattr(command, "name", "")}
+        parent = getattr(command, "parent", None)
+        if parent is not None:
+            names.add(getattr(parent, "name", ""))
+        names.discard("")
+
+        # .disable / .cooldown are enforced here because every command passes
+        # through invoke, and a blocked command must answer instead of vanishing.
+        blocked = next((name for name in names if not prefs.is_allowed(self, name)), None)
+        if blocked:
+            error = self.config.get_emoji("error")
+            return await ctx.send(f"{error} `{blocked}` is disabled. `.enable {blocked}`")
+
+        try:
+            wait = prefs.cooldown_left(self)
+        except Exception:  # noqa: BLE001 - a broken pref must not break commands
+            wait = 0.0
+        if wait > 0 and not any(name in prefs.BYPASS for name in names):
+            error = self.config.get_emoji("error")
+            return await ctx.send(f"{error} slow down — **{wait:.1f}s** left.")
+        prefs.mark(self)
+
         await self.human_delay()
         await super().invoke(ctx)
 
