@@ -8,6 +8,7 @@ Sub-cogs (``extended/``):
     fakeplay     ``.fakeplay`` a game with its official icon, flags and progress
     fakechat     ``.fakechat`` rendered fake message image
     device       client icon (desktop / phone / console / VR) via IDENTIFY
+    pinterest    ``.pinterest`` pins, boards and profiles, no api key
 
 All of them end up calling ``change_presence`` on the same account, and before the
 merge each one decided on its own whether it was allowed to. They now share one
@@ -26,6 +27,7 @@ from plugins.fun.extended.badges import AutoBadgesMixin
 from plugins.fun.extended.device import DeviceMixin
 from plugins.fun.extended.fakechat import FakeChatMixin
 from plugins.fun.extended.fakeplay import FakePlayMixin
+from plugins.fun.extended.pinterest import PinterestMixin
 from plugins.fun.extended.rpc import RPCMixin
 from plugins.fun.extended.spotify import SpotifySpoofMixin
 
@@ -40,6 +42,7 @@ class Fun(
     FakePlayMixin,
     FakeChatMixin,
     DeviceMixin,
+    PinterestMixin,
     commands.Cog,
 ):
     def __init__(self, bot):
@@ -65,6 +68,7 @@ class Fun(
     def cog_unload(self):
         self.cog_unload_rpc()
         self.cog_unload_spotify()
+        self.cog_unload_pinterest()
 
 
 async def setup(bot):
