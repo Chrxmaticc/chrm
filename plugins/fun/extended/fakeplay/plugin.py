@@ -1,106 +1,177 @@
+"""``.fakeplay`` -- a game activity with real art, optional lines and progress.
+
+Three things changed after the old scrape host died:
+
+* the games come from Discord's own detectable catalogue (see
+  :mod:`plugins.fun.extended.gamecatalog`), which carries each game's icon hash,
+  so the art no longer depends on a per-game API call;
+* aliases from that catalogue are matched too, so ``cs2`` finds Counter-Strike 2;
+* the activity type, large image and small image can be overridden per call.
+
+Anything after a pipe becomes the two lines under the game name, and a line that
+is only a percentage becomes a bar (``fakeplay.formatting``).
+"""
+import random
+import re
+from datetime import timedelta
+
+import aiohttp
 import discord
 from discord.ext import commands
 from discord.http import Route
-import aiohttp
-import re
+
+from plugins.fun.extended import gamecatalog
+
+from .formatting import apply_progress, progress_bar, short_duration
+
+#: ``--listen`` etc. anywhere in the query picks another activity type
+TYPE_RE = re.compile(r"\s*--(play|listen|watch|compete)\b", re.IGNORECASE)
+TYPES = {
+    "--play": (discord.ActivityType.playing, "playing"),
+    "--listen": (discord.ActivityType.listening, "listening to"),
+    "--watch": (discord.ActivityType.watching, "watching"),
+    "--compete": (discord.ActivityType.competing, "competing in"),
+}
+
+#: ``icon=<url>`` / ``small=<url>`` override the art for one call
+ICON_RE = re.compile(r"\s*(?:icon|image|large)=(\S+)", re.IGNORECASE)
+SMALL_RE = re.compile(r"\s*small=(\S+)", re.IGNORECASE)
+
+#: ``.fakeplay random`` picks one instead of searching
+RANDOM_WORDS = {"random", "rng", "any"}
+
 
 class FakePlayMixin:
     """Commands for this sub-cog; assembled into the package cog."""
+
     async def get_games(self):
-        """downloads the game list once and caches it in memory"""
+        """Discord's detectable-games catalogue, downloaded once per process."""
         if self.games_cache:
             return self.games_cache
-
         async with aiohttp.ClientSession() as session:
-            async with session.get(self.cache_url) as resp:
-                text = await resp.text()
-        
-        # extract name and id
-        matches = re.findall(r'\["(.*?)","(\d{17,20})"\]', text)
-        self.games_cache = matches
-        return matches
+            games = await gamecatalog.load(
+                session, getattr(self, "cache_url", gamecatalog.SOURCE)
+            )
+        self.games_cache = games
+        return games
 
-    async def get_game_icon(self, app_id):
-        """resolve a game's icon URL from its application id, cached per game.
-
-        Only the CDN form renders: ActivityAssets rewrites it to ``mp:app-icons/...``,
-        which is the media-proxy key clients can actually draw. A bare name and
-        application_id draws the generic controller instead.
-        """
+    async def get_game_icon(self, game):
+        """Icon URL for a catalogued game, cached, with the old API as fallback."""
+        app_id = game.app_id
         if app_id in self.icon_cache:
             return self.icon_cache[app_id]
 
-        icon = None
-        for path in ("/applications/{application_id}/rpc", "/applications/{application_id}/public"):
-            try:
-                data = await self.bot.http.request(
-                    Route("GET", path, application_id=int(app_id))
-                )
-            except Exception:
-                continue
-            if data.get("icon"):
-                icon = f"https://cdn.discordapp.com/app-icons/{app_id}/{data['icon']}.png"
-                break
+        icon = gamecatalog.icon_url(game)
+        if not icon:
+            for path in ("/applications/{application_id}/rpc", "/applications/{application_id}/public"):
+                try:
+                    data = await self.bot.http.request(
+                        Route("GET", path, application_id=int(app_id))
+                    )
+                except Exception:
+                    continue
+                if data.get("icon"):
+                    icon = gamecatalog.CDN_ICON.format(app_id=app_id, icon=data["icon"])
+                    break
 
         self.icon_cache[app_id] = icon
         return icon
 
-    @commands.command()
+    @commands.command(name="fakeplay")
     async def fakeplay(self, ctx, *, game_query: str):
-        """fakes playing a game with its official icon. usage: .fakeplay roblox [| details | state]"""
-        loading = self.bot.config.get_emoji("loading")
-        msg = await ctx.send(f"{loading} searching for `{game_query}`...")
+        """fakes a game activity.
 
-        # Anything after a pipe becomes the metadata lines under the game name,
-        # same order as .rpc: name | details | state
-        parts = [part.strip() for part in game_query.split("|")]
-        query = parts[0] or game_query.strip()
-        details = parts[1] if len(parts) > 1 and parts[1] else None
-        state = parts[2] if len(parts) > 2 and parts[2] else None
+        usage: .fakeplay <game> [| details | state | 52% [in 30m]]
+               [--listen|--watch|--compete] [icon=<url>] [small=<url>]
+
+        ``random`` picks a game, ``icon=``/``small=`` swap the art, and a
+        percentage line becomes a bar (``52% in 30m`` also counts down).
+        """
+        error = self.bot.config.get_emoji("error")
+        loading = self.bot.config.get_emoji("loading")
+        success = self.bot.config.get_emoji("success")
+
+        raw = game_query.strip()
+
+        # Flags are pulled out of the whole query so they can sit anywhere.
+        activity_type, type_label = TYPES["--play"]
+        found = TYPE_RE.search(raw)
+        if found:
+            activity_type, type_label = TYPES[f"--{found.group(1).lower()}"]
+            raw = TYPE_RE.sub(" ", raw, count=1).strip()
+
+        icon_override = None
+        found = ICON_RE.search(raw)
+        if found:
+            icon_override = found.group(1)
+            raw = ICON_RE.sub(" ", raw, count=1).strip()
+
+        small_image = None
+        found = SMALL_RE.search(raw)
+        if found:
+            small_image = found.group(1)
+            raw = SMALL_RE.sub(" ", raw, count=1).strip()
+
+        msg = await ctx.send(f"{loading} searching for `{raw or game_query}`...")
+
+        parts = [part.strip() for part in raw.split("|")]
+        query = parts[0] or raw.strip()
+        fields, percent, eta, problem = apply_progress(parts[1:4])
+        if problem:
+            return await msg.edit(content=f"{error} {problem}.")
+
+        details = fields[0] if len(fields) > 0 and fields[0] else None
+        state = fields[1] if len(fields) > 1 and fields[1] else None
 
         try:
             games = await self.get_games()
-        except Exception as e:
-            error = self.bot.config.get_emoji("error")
-            return await msg.edit(content=f"{error} failed to download game database.")
+        except Exception as exc:  # noqa: BLE001 - show which source failed
+            return await msg.edit(content=f"{error} game database download failed: `{exc}`")
 
-        matched_game = None
-        # search for a close match
-        for name, app_id in games:
-            if query.lower() in name.lower():
-                matched_game = (name, app_id)
-                break
+        if query.lower() in RANDOM_WORDS:
+            game = random.choice(games) if games else None
+        else:
+            game = gamecatalog.find(games, query)
+
+        name = game.name if game else query
+        icon = icon_override or (gamecatalog.icon_url(game) if game else None)
+        if not icon and game:
+            icon = await self.get_game_icon(game)
+
+        assets = None
+        if icon or small_image:
+            assets = discord.ActivityAssets(
+                large_image=icon,
+                large_text=name if icon else None,
+                small_image=small_image,
+            )
+
+        # `52% in 30m` gets an end timestamp, which is what makes the client
+        # animate a bar instead of just counting up from the start.
+        start = discord.utils.utcnow()
+        stamps = discord.ActivityTimestamps(start=start)
+        if eta:
+            stamps = discord.ActivityTimestamps(start=start, end=start + timedelta(seconds=eta))
 
         self.bot.locked_presence = True
+        activity = discord.Activity(
+            type=activity_type,
+            name=name,
+            application_id=game.app_id if game else None,
+            details=details,
+            state=state,
+            assets=assets,
+            timestamps=stamps,
+        )
+        await self.bot.change_presence(activity=activity)
 
-        if matched_game:
-            name, app_id = matched_game
-            icon = await self.get_game_icon(app_id)
-            activity = discord.Activity(
-                type=discord.ActivityType.playing,
-                name=name,
-                application_id=app_id,
-                details=details,
-                state=state,
-                assets=discord.ActivityAssets(large_image=icon, large_text=name) if icon else None,
-                timestamps=discord.ActivityTimestamps(start=discord.utils.utcnow()),
-            )
-            await self.bot.change_presence(activity=activity)
-            success = self.bot.config.get_emoji("success")
-            note = "" if icon else " *(no official icon found)*"
-            await msg.edit(content=f"{success} now fake playing: **{name}**{note}")
-        else:
-            # fallback if the game isn't in the database
-            activity = discord.Activity(
-                type=discord.ActivityType.playing,
-                name=query,
-                details=details,
-                state=state,
-                timestamps=discord.ActivityTimestamps(start=discord.utils.utcnow()),
-            )
-            await self.bot.change_presence(activity=activity)
-            success = self.bot.config.get_emoji("success")
-            await msg.edit(content=f"{success} now fake playing: **{query}** *(no official icon found)*")
+        note = "" if icon else " *(no icon found)*"
+        if not game:
+            note = " *(not in the catalogue, no icon)*"
+        extra = f" · {progress_bar(percent)}" if percent is not None else ""
+        if percent is not None and eta:
+            extra += f" (ends in {short_duration(eta)})"
+        await msg.edit(content=f"{success} now fake {type_label}: **{name}**{note}{extra}")
 
     @commands.command()
     async def stopfakeplay(self, ctx):
