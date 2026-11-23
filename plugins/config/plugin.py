@@ -11,6 +11,7 @@ Sub-cogs (``extended/``):
     aliases       rewrite ``.s`` into ``.snipe`` before dispatch
     custom_cmds   user-defined ``.addcmd`` triggers
     scheduler     delayed / repeating sends, incl. ``.alibi``
+    prefs         ``.settings`` / ``.prefs`` / wordle toggles / ``.disable`` / ``.cooldown``
 
 Grouping rule: if a command exists to be *configured* -- a prefix, a delay, a
 rotation list, an auto-reply, an alias, a scheduled message -- it belongs here.
@@ -31,6 +32,7 @@ from plugins.config.extended.custom_cmds import CustomCommandsMixin
 from plugins.config.extended.delay import DelayMixin
 from plugins.config.extended.nickname import NicknameMixin
 from plugins.config.extended.owner import OwnerMixin
+from plugins.config.extended.prefs import PrefsMixin
 from plugins.config.extended.prefixes import PrefixMixin
 from plugins.config.extended.profile import ProfileMixin
 from plugins.config.extended.responders import RespondersMixin
@@ -47,6 +49,7 @@ class Config(
     AliasesMixin,
     CustomCommandsMixin,
     SchedulerMixin,
+    PrefsMixin,
     commands.Cog,
 ):
     def __init__(self, bot):

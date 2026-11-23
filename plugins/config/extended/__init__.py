@@ -10,4 +10,5 @@ __all__ = [
     "aliases",
     "custom_cmds",
     "scheduler",
+    "prefs",
 ]

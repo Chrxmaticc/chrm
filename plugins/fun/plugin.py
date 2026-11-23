@@ -9,6 +9,10 @@ Sub-cogs (``extended/``):
     fakechat     ``.fakechat`` rendered fake message image
     device       client icon (desktop / phone / console / VR) via IDENTIFY
     pinterest    ``.pinterest`` pins, boards and profiles, no api key
+    wordle       ``.wordle`` / ``.guess`` / ``.wordleend`` / ``.wordlestats``
+    games        ``.slots`` / ``.blackjack`` / ``.unscramble`` / ``.nhie`` / ``.topic``
+    trivia       ``.trivia`` / ``.answer``
+    hangman      ``.hangman`` / ``.hguess`` / ``.hangmanend``
 
 All of them end up calling ``change_presence`` on the same account, and before the
 merge each one decided on its own whether it was allowed to. They now share one
@@ -27,9 +31,13 @@ from plugins.fun.extended.badges import AutoBadgesMixin
 from plugins.fun.extended.device import DeviceMixin
 from plugins.fun.extended.fakechat import FakeChatMixin
 from plugins.fun.extended.fakeplay import FakePlayMixin
+from plugins.fun.extended.games import GamesMixin
+from plugins.fun.extended.hangman import HangmanMixin
 from plugins.fun.extended.pinterest import PinterestMixin
 from plugins.fun.extended.rpc import RPCMixin
 from plugins.fun.extended.spotify import SpotifySpoofMixin
+from plugins.fun.extended.trivia import TriviaMixin
+from plugins.fun.extended.wordle import WordleMixin
 
 #: Discord's own "detectable games" catalogue, shared by fakeplay/badges lookups
 GAME_CACHE_URL = gamecatalog.SOURCE
@@ -43,6 +51,10 @@ class Fun(
     FakeChatMixin,
     DeviceMixin,
     PinterestMixin,
+    WordleMixin,
+    GamesMixin,
+    TriviaMixin,
+    HangmanMixin,
     commands.Cog,
 ):
     def __init__(self, bot):
@@ -64,6 +76,15 @@ class Fun(
         self.icon_cache = {}
         # device
         self.base_api = BASE_API
+        # wordle / games / trivia / hangman: one live game per channel, keyed by id
+        self.wordle_games = {}
+        self.wordle_stats = {}
+        self.trivia_games = {}
+        self.hangman_games = {}
+        self.unscramble_games = {}
+        self.blackjack_games = {}
+        features = self.bot.config.data.setdefault("features", {})
+        self.wordle_stats = features.get("wordle") or {}
 
     def cog_unload(self):
         self.cog_unload_rpc()
