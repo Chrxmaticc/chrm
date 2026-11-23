@@ -3,8 +3,12 @@ from discord.ext import commands
 import aiohttp
 import re
 
-class FakePlayMixin:
-    """Commands for this sub-cog; assembled into the package cog."""
+class FakePlay(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.games_cache = None
+        self.cache_url = "https://cdn.phaseworld.top/Discord/badge.txt"
+
     async def get_games(self):
         """downloads the game list once and caches it in memory"""
         if self.games_cache:
@@ -67,3 +71,6 @@ class FakePlayMixin:
         await self.bot.change_presence(activity=discord.CustomActivity(name="chrm on top"))
         success = self.bot.config.get_emoji("success")
         await ctx.send(f"{success} stopped fake play. rotator unlocked.")
+
+async def setup(bot):
+    await bot.add_cog(FakePlay(bot))
