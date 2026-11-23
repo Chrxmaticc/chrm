@@ -5,7 +5,7 @@ Sub-cogs (``extended/``):
     rpc          ``.rpc`` / ``.stream`` / ``.customstatus`` / status rotator
     spotify      ``.spotify`` fake "listening to" with real album art + seek bar
     badges       ``.autobadges`` game rotation, ``.testrpc`` diagnostic
-    fakeplay     ``.fakeplay`` a game with its official icon
+    fakeplay     ``.fakeplay`` a game with its official icon, flags and progress
     fakechat     ``.fakechat`` rendered fake message image
     device       client icon (desktop / phone / console / VR) via IDENTIFY
 
@@ -20,6 +20,8 @@ rotator, ``spotify._owns_presence``) are still the ones in force.
 from api_base import BASE_API
 from discord.ext import commands
 
+from plugins.fun.extended import gamecatalog
+
 from plugins.fun.extended.badges import AutoBadgesMixin
 from plugins.fun.extended.device import DeviceMixin
 from plugins.fun.extended.fakechat import FakeChatMixin
@@ -27,8 +29,8 @@ from plugins.fun.extended.fakeplay import FakePlayMixin
 from plugins.fun.extended.rpc import RPCMixin
 from plugins.fun.extended.spotify import SpotifySpoofMixin
 
-#: cache of Discord's own "detectable games" list, shared by fakeplay/badges lookups
-GAME_CACHE_URL = "https://cdn.phaseworld.top/Discord/badge.txt"
+#: Discord's own "detectable games" catalogue, shared by fakeplay/badges lookups
+GAME_CACHE_URL = gamecatalog.SOURCE
 
 
 class Fun(
@@ -50,9 +52,13 @@ class Fun(
         # badges
         self.badge_task = None
         self.is_running = False
+        self._analytics = {}
+        self._hb_session = None
+        self._launch_sig = None
         # fakeplay
         self.games_cache = None
         self.cache_url = GAME_CACHE_URL
+        self.icon_cache = {}
         # device
         self.base_api = BASE_API
 

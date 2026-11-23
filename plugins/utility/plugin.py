@@ -6,6 +6,7 @@ Sub-cogs (``extended/``):
     utility     ``.purge``, ``.blacktea``
     sniper      ``.snipe`` / ``.editsnipe`` / ``.reactionsnipe`` + the caches behind them
     transcript  ``.transcript`` HTML export
+    typing      ``.type`` hold the typing indicator without sending anything
 
 The sniper keeps a bounded deque per channel for deletes, edits and removed
 reactions, so the caches live here rather than in the sub-cog: every listener that
@@ -19,12 +20,13 @@ from plugins.utility.extended.cleanup import CleanupMixin
 from plugins.utility.extended.groups import GroupChatMixin
 from plugins.utility.extended.sniper import SniperMixin
 from plugins.utility.extended.transcript import TranscriptMixin
+from plugins.utility.extended.typing import TypingMixin
 
 #: how many messages per channel each snipe cache keeps
 CACHE_SIZE = 50
 
 
-class Utility(GroupChatMixin, CleanupMixin, SniperMixin, TranscriptMixin, commands.Cog):
+class Utility(GroupChatMixin, CleanupMixin, SniperMixin, TranscriptMixin, TypingMixin, commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.deleted_cache = {}
