@@ -122,6 +122,12 @@ MASK = "."
 # Keep descriptions short: each category card has to stay under
 # core.ui.cv2.MAX_EMBED_BYTES.
 CATEGORIES = {
+    "levels": [
+        ("levels", "xp bar, streak, what is next"),
+        ("cmds [level] / unlocks", "every unlockable command, by level"),
+        ("achievements", "the trophy case"),
+        ("levelnotify on|off", "level-up and achievement messages"),
+    ],
     "fun": [
         ("rpc <type> <name> | <details> | <state> | <img>", "custom rich presence"),
         ("rpcmenu", "interactive rpc builder"),
@@ -183,6 +189,16 @@ CATEGORIES = {
 #: Words that also open a category, e.g. `.help rpc` or `.help triggers`.
 #: The old names are kept so muscle memory from before the rename still works.
 EXTRA_KEYS = {
+    "level": "levels",
+    "xp": "levels",
+    "progress": "levels",
+    "achievement": "levels",
+    "achievements": "levels",
+    "trophy": "levels",
+    "trophies": "levels",
+    "unlocks": "levels",
+    "command": "levels",
+    "commands": "levels",
     "presence": "fun",
     "rpc": "fun",
     "status": "fun",
@@ -244,6 +260,20 @@ def build_index_components(bot, prefix: str):
     children = [
         v2.text(f"### {name} — selfbot commands"),
         v2.text(f"prefix `{prefix}` · {len(CATEGORIES)} categories · {_total()} commands"),
+    ]
+
+    # The levels cog owns progression; show where the account is without
+    # importing plugins/ into the framework. Older builds simply omit the line.
+    levels = bot.get_cog("Levels") if hasattr(bot, "get_cog") else None
+    if levels is not None and hasattr(levels, "level"):
+        children.append(
+            v2.text(
+                f"your level **{levels.level}** · {levels.unlocked_count}/{levels.total} "
+                f"unlocked · `{prefix}levels`"
+            )
+        )
+
+    children += [
         v2.separator(spacing=1),
         v2.text("\n".join(lines)),
         v2.separator(spacing=2),
