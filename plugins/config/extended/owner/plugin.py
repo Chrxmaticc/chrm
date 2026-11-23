@@ -20,12 +20,25 @@ class OwnerMixin:
     @commands.command()
     @is_owner()
     async def reload(self, ctx, plugin: str):
-        """reloads a plugin package without restarting. usage: .reload fun"""
+        """reloads (or first-loads) a plugin package. usage: .reload fun"""
+        name = f"plugins.{plugin}"
+        success = self.bot.config.get_emoji("success")
+        error = self.bot.config.get_emoji("error")
+        # A package whose import failed at startup is not "loaded", and
+        # reload_extension would only say so. Load it instead, so the real error
+        # (usually a missing module) is what gets reported.
+        action = "reload" if name in self.bot.extensions else "load"
         try:
-            await self.bot.reload_extension(f"plugins.{plugin}")
-            await ctx.send(f"{self.bot.config.get_emoji('success')} reloaded `plugins/{plugin}`")
+            if action == "reload":
+                await self.bot.reload_extension(name)
+            else:
+                await self.bot.load_extension(name)
         except Exception as e:
-            await ctx.send(f"{self.bot.config.get_emoji('error')} failed to reload: {e}")
+            getattr(self.bot, "load_errors", {}).pop(name, None)
+            return await ctx.send(f"{error} failed to {action}: {type(e).__name__}: {e}")
+
+        getattr(self.bot, "load_errors", {}).pop(name, None)
+        await ctx.send(f"{success} {action}ed `plugins/{plugin}`")
 
     @commands.command()
     @is_owner()
@@ -41,4 +54,12 @@ class OwnerMixin:
             f"**platform:** {self.bot.ws.platform}\n"
             f"**latency:** {round(self.bot.latency * 1000)}ms"
         )
+
+        # A plugin that failed to import has no commands, so the only symptom is
+        # silence. Surface the reason here instead of only in the host logs.
+        failures = getattr(self.bot, "load_errors", None)
+        if failures:
+            lines = [f"`{name}` -- {reason[:200]}" for name, reason in failures.items()]
+            text += "\n**failed plugins:**\n" + "\n".join(lines)
+
         await ctx.send(text)

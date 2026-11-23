@@ -10,6 +10,11 @@ Three things changed after the old scrape host died:
 
 Anything after a pipe becomes the two lines under the game name, and a line that
 is only a percentage becomes a bar (``fakeplay.formatting``).
+
+Every failure path edits the "searching" message rather than returning early, and
+the catalogue download has a hard timeout: a dead source used to leave the
+command looking dead too, because the old code waited on the default five-minute
+aiohttp timeout while the user stared at "searching...".
 """
 import random
 import re
@@ -40,6 +45,9 @@ SMALL_RE = re.compile(r"\s*small=(\S+)", re.IGNORECASE)
 #: ``.fakeplay random`` picks one instead of searching
 RANDOM_WORDS = {"random", "rng", "any"}
 
+#: catalogue download/parse ceiling; a hung source must not hang the command
+CATALOGUE_TIMEOUT = aiohttp.ClientTimeout(total=120)
+
 
 class FakePlayMixin:
     """Commands for this sub-cog; assembled into the package cog."""
@@ -48,11 +56,13 @@ class FakePlayMixin:
         """Discord's detectable-games catalogue, downloaded once per process."""
         if self.games_cache:
             return self.games_cache
-        async with aiohttp.ClientSession() as session:
+        print("[fakeplay] downloading detectable games catalogue...")
+        async with aiohttp.ClientSession(timeout=CATALOGUE_TIMEOUT) as session:
             games = await gamecatalog.load(
                 session, getattr(self, "cache_url", gamecatalog.SOURCE)
             )
         self.games_cache = games
+        print(f"[fakeplay] catalogue ready: {len(games):,} games")
         return games
 
     async def get_game_icon(self, game):
@@ -87,8 +97,22 @@ class FakePlayMixin:
         ``random`` picks a game, ``icon=``/``small=`` swap the art, and a
         percentage line becomes a bar (``52% in 30m`` also counts down).
         """
-        error = self.bot.config.get_emoji("error")
         loading = self.bot.config.get_emoji("loading")
+        error = self.bot.config.get_emoji("error")
+
+        msg = await ctx.send(f"{loading} searching for `{game_query.strip()}`...")
+        try:
+            await self._apply_fakeplay(msg, game_query)
+        except Exception as exc:  # noqa: BLE001 - the user must always get a reason
+            print(f"[fakeplay] failed for {game_query!r}: {type(exc).__name__}: {exc}")
+            try:
+                await msg.edit(content=f"{error} fakeplay failed: `{type(exc).__name__}: {exc}`")
+            except Exception:
+                pass
+
+    async def _apply_fakeplay(self, msg, game_query):
+        """Resolve the query and set the presence; reports into ``msg``."""
+        error = self.bot.config.get_emoji("error")
         success = self.bot.config.get_emoji("success")
 
         raw = game_query.strip()
@@ -112,8 +136,6 @@ class FakePlayMixin:
             small_image = found.group(1)
             raw = SMALL_RE.sub(" ", raw, count=1).strip()
 
-        msg = await ctx.send(f"{loading} searching for `{raw or game_query}`...")
-
         parts = [part.strip() for part in raw.split("|")]
         query = parts[0] or raw.strip()
         fields, percent, eta, problem = apply_progress(parts[1:4])
@@ -128,8 +150,11 @@ class FakePlayMixin:
         except Exception as exc:  # noqa: BLE001 - show which source failed
             return await msg.edit(content=f"{error} game database download failed: `{exc}`")
 
+        if not games:
+            return await msg.edit(content=f"{error} the game database came back empty.")
+
         if query.lower() in RANDOM_WORDS:
-            game = random.choice(games) if games else None
+            game = random.choice(games)
         else:
             game = gamecatalog.find(games, query)
 

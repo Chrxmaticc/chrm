@@ -21,7 +21,13 @@ import os
 PLUGINS_DIR = "plugins"
 
 #: cogs that live in the framework rather than in plugins/
-FRAMEWORK_EXTENSIONS = ("core.context", "core.client.helper")
+#:
+#: ``core.client.helper`` is deliberately not loaded: it is a slash-command bot
+#: (``app_commands``, ``discord.ui`` modals, ``Bot.tree``) and ``discord.py-self``
+#: 2.x ships none of those -- a user account cannot register application commands.
+#: Importing it therefore always raised ``ImportError: cannot import name
+#: 'app_commands' from 'discord'`` and left a [PLUGIN ERROR] line on every boot.
+FRAMEWORK_EXTENSIONS = ("core.context",)
 
 
 def iter_extensions(root: str = PLUGINS_DIR):
