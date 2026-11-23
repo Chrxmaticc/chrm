@@ -135,6 +135,7 @@ CATEGORIES = {
         ("autobadges [amount] [secs] / stopbadges", "fake game rotation (cosmetic)"),
         ("farmtime [games] [hours_each]", "credit game time / variety telemetry"),
         ("device <platform>", "ios, android, windows, xbox"),
+        ("pinterest <query> | board <user>/<board> | user <name>", "pins, boards, profiles"),
         ("testrpc", "presence sanity check"),
     ],
     "utility": [
