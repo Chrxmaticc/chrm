@@ -109,6 +109,13 @@ class ChrmInstance(commands.Bot):
             names.add(getattr(parent, "name", ""))
         names.discard("")
 
+        # .ignorechannel silences dispatch in one channel; the three commands that
+        # can undo it sit on CHANNEL_BYPASS, so an ignored channel is never a trap.
+        if not any(name in prefs.CHANNEL_BYPASS for name in names) and prefs.ignores_channel(
+            self, getattr(getattr(ctx, "channel", None), "id", 0)
+        ):
+            return
+
         # .disable / .cooldown are enforced here because every command passes
         # through invoke, and a blocked command must answer instead of vanishing.
         blocked = next((name for name in names if not prefs.is_allowed(self, name)), None)
@@ -222,7 +229,7 @@ class ChrmInstance(commands.Bot):
                     "listening": discord.ActivityType.listening,
                     "competing": discord.ActivityType.competing
                 }
-                
+
                 assets, asset_app_id = await self._dashboard_assets(
                     rpc_data.get("image_url"), rpc_data.get("details")
                 )
@@ -249,7 +256,7 @@ class ChrmInstance(commands.Bot):
             return
         if isinstance(error, commands.CommandOnCooldown):
             return await ctx.send(f"slow down. try again in {error.retry_after:.1f}s.")
-        
+
         error_emoji = self.config.get_emoji("error")
         await ctx.send(f"{error_emoji} error: {str(error).lower()}")
 
@@ -266,15 +273,15 @@ else:
     BOTS_URL = None
 
 running_bots = {}
-login_cooldowns = {} 
+login_cooldowns = {}
 _auth_warned_at = {}
 
 async def fetch_users_from_api():
     if not BOTS_URL or not ENGINE_SECRET:
         return None
-        
+
     headers = {"x-engine-secret": ENGINE_SECRET}
-    
+
     try:
         # One shared session for the whole engine (see core/api.py).
         async with api.session().get(BOTS_URL, headers=headers) as resp:
@@ -284,7 +291,7 @@ async def fetch_users_from_api():
                 if time.time() - _auth_warned_at.get("t", 0) > 60:
                     _auth_warned_at["t"] = time.time()
                     print(f"🔑 [API AUTH] {BOTS_URL} rejected ENGINE_SECRET ({resp.status}).")
-            return None 
+            return None
     except Exception as e:
         print(f"🌐 [API ERROR] {BOTS_URL}: {type(e).__name__}: {e}")
         return None
@@ -292,7 +299,7 @@ async def fetch_users_from_api():
 async def start_bot_for_user(user_data):
     token = user_data.get("token")
     uid = user_data["discord_id"]
-    
+
     if not token:
         return
 
@@ -304,7 +311,7 @@ async def start_bot_for_user(user_data):
         await bot.start(token)
     except discord.LoginFailure:
         print(f"❌ [LOGIN FAILED] Invalid token for {uid}. Cooldown 5m.")
-        login_cooldowns[uid] = time.time() + 300 
+        login_cooldowns[uid] = time.time() + 300
     except Exception as e:
         print(f"❌ [LOGIN CRASHED] {uid}: {e}")
         login_cooldowns[uid] = time.time() + 300
@@ -316,37 +323,37 @@ async def start_bot_for_user(user_data):
 async def sync_loop():
     print("🤖 [SYNC] Starting memory-safe sync loop...")
     api_errors = 0
-    
+
     while True:
         start_time = time.time()
-        
+
         # MEMORY WATCHDOG
         process = psutil.Process(os.getpid())
         ram_usage = process.memory_info().rss / 1024 / 1024 # In MB
-        
-        if ram_usage > 460: 
+
+        if ram_usage > 460:
             print(f"🚨 [CRITICAL] RAM USAGE AT {ram_usage:.1f}MB. Skipping sync to prevent crash.")
-            gc.collect() 
+            gc.collect()
             await asyncio.sleep(15)
             continue
-        
+
         users = await fetch_users_from_api()
-        
+
         if users is None:
             api_errors += 1
-            if api_errors % 5 == 1: 
+            if api_errors % 5 == 1:
                 print("⚠️ [API WARNING] API connection failed. Backing off...")
             await asyncio.sleep(10)
             continue
-        
-        api_errors = 0 
+
+        api_errors = 0
 
         # Clean up ghost instances
         for uid in list(running_bots.keys()):
             if running_bots[uid].is_closed():
                 del running_bots[uid]
                 print(f"🧹 [CLEANUP] Detected closed instance for {uid}. Removed.")
-        
+
         gc.collect()
 
         for user in users:
@@ -362,15 +369,15 @@ async def sync_loop():
 
             if uid in login_cooldowns:
                 if time.time() < login_cooldowns[uid]:
-                    continue 
+                    continue
                 else:
-                    del login_cooldowns[uid] 
+                    del login_cooldowns[uid]
 
             if is_active and uid not in running_bots:
                 if ram_usage > 420:
                     print(f"⚠️ [RAM LIMIT] Refusing to start {uid}. Not enough memory.")
                     continue
-                    
+
                 print(f"🚀 [START] User {uid} is active. Launching...")
                 asyncio.create_task(start_bot_for_user(user))
                 continue
