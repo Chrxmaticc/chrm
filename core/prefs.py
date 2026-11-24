@@ -20,11 +20,16 @@ DEFAULTS = {
     "timezone": "UTC",
     "disabled": [],
     "cooldown": 0.0,
+    "ignored_channels": [],
 }
 
 #: commands that keep working even when everything else is disabled, so the
 #: account can never lock itself out of turning things back on
 BYPASS = frozenset({"help", "enable", "disable", "disabled", "settings", "prefs"})
+
+#: commands that still run inside an ignored channel -- without these, ignoring
+#: the channel you are standing in would leave no way to undo it
+CHANNEL_BYPASS = BYPASS | {"ignorechannel", "unignorechannel", "ignoredchannels"}
 
 
 def raw(bot) -> dict:
@@ -71,6 +76,24 @@ def is_disabled(bot, name: str) -> bool:
 def is_allowed(bot, name: str) -> bool:
     """True when ``name`` may run: not disabled, or on the bypass list."""
     return name in BYPASS or not is_disabled(bot, name)
+
+
+def ignored_channels(bot) -> list:
+    """Channel ids where command dispatch is silenced (``.ignorechannel``)."""
+    value = get(bot, "ignored_channels", [])
+    if not isinstance(value, list):
+        return []
+    numbers = []
+    for item in value:
+        try:
+            numbers.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return numbers
+
+
+def ignores_channel(bot, channel_id) -> bool:
+    return channel_id in ignored_channels(bot)
 
 
 def cooldown_seconds(bot) -> float:
