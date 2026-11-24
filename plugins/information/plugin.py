@@ -9,6 +9,7 @@ Sub-cogs (``extended/``):
     lastfm   ``.lastfm`` libre.fm now playing and top artists
     lookups  ``.whereami`` / ``.channelinfo`` / ``.roleinfo`` / ``.inviteinfo`` / ``.idinfo``
     web      ``.define`` / ``.weather`` / ``.github`` / ``.crypto`` / ``.color`` / ``.time``
+    reference ``.image`` / ``.wiki`` / ``.book`` / ``.hn`` / ``.currency`` / ``.sun``
 
 Read-only outward calls (Discord, Roblox, the lyrics and AI endpoints); nothing
 here writes to the dashboard except the lyrics task handle.
@@ -22,6 +23,7 @@ from plugins.information.extended.info import InfoMixin
 from plugins.information.extended.lastfm import LastFMMixin
 from plugins.information.extended.lookups import LookupsMixin
 from plugins.information.extended.lyrics import LyricsMixin
+from plugins.information.extended.reference import ReferenceMixin
 from plugins.information.extended.roblox import RobloxMixin
 from plugins.information.extended.web import WebLookupsMixin
 
@@ -40,6 +42,7 @@ class Information(
     LastFMMixin,
     LookupsMixin,
     WebLookupsMixin,
+    ReferenceMixin,
     commands.Cog,
 ):
     def __init__(self, bot):
