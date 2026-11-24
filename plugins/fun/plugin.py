@@ -13,6 +13,7 @@ Sub-cogs (``extended/``):
     games        ``.slots`` / ``.blackjack`` / ``.unscramble`` / ``.nhie`` / ``.topic``
     trivia       ``.trivia`` / ``.answer``
     hangman      ``.hangman`` / ``.hguess`` / ``.hangmanend``
+    randomness   ``.dog`` / ``.joke`` / ``.quote`` / ``.xkcd`` / ``.pokemon``
 
 All of them end up calling ``change_presence`` on the same account, and before the
 merge each one decided on its own whether it was allowed to. They now share one
@@ -34,6 +35,7 @@ from plugins.fun.extended.fakeplay import FakePlayMixin
 from plugins.fun.extended.games import GamesMixin
 from plugins.fun.extended.hangman import HangmanMixin
 from plugins.fun.extended.pinterest import PinterestMixin
+from plugins.fun.extended.randomness import RandomnessMixin
 from plugins.fun.extended.rpc import RPCMixin
 from plugins.fun.extended.spotify import SpotifySpoofMixin
 from plugins.fun.extended.trivia import TriviaMixin
@@ -55,6 +57,7 @@ class Fun(
     GamesMixin,
     TriviaMixin,
     HangmanMixin,
+    RandomnessMixin,
     commands.Cog,
 ):
     def __init__(self, bot):

@@ -12,4 +12,5 @@ __all__ = [
     "games",
     "trivia",
     "hangman",
+    "randomness",
 ]
