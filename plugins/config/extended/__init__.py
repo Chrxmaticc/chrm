@@ -11,4 +11,5 @@ __all__ = [
     "custom_cmds",
     "scheduler",
     "prefs",
+    "toolkit",
 ]

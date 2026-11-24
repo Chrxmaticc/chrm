@@ -12,6 +12,8 @@ Sub-cogs (``extended/``):
     custom_cmds   user-defined ``.addcmd`` triggers
     scheduler     delayed / repeating sends, incl. ``.alibi``
     prefs         ``.settings`` / ``.prefs`` / wordle toggles / ``.disable`` / ``.cooldown``
+    toolkit       ``.backup`` / ``.restore`` / ``.ghost`` / ``.autoread`` /
+                  ``.autodelete`` / ``.ignorechannel``
 
 Grouping rule: if a command exists to be *configured* -- a prefix, a delay, a
 rotation list, an auto-reply, an alias, a scheduled message -- it belongs here.
@@ -37,6 +39,7 @@ from plugins.config.extended.prefixes import PrefixMixin
 from plugins.config.extended.profile import ProfileMixin
 from plugins.config.extended.responders import RespondersMixin
 from plugins.config.extended.scheduler import SchedulerMixin
+from plugins.config.extended.toolkit import ToolkitMixin
 
 
 class Config(
@@ -50,6 +53,7 @@ class Config(
     CustomCommandsMixin,
     SchedulerMixin,
     PrefsMixin,
+    ToolkitMixin,
     commands.Cog,
 ):
     def __init__(self, bot):
@@ -72,6 +76,7 @@ class Config(
         await self.on_message_aliases(message)
         await self.on_message_responders(message)
         await self.on_message_customs(message)
+        await self.on_message_toolkit(message)
 
     def cog_unload(self):
         self.cog_unload_profile()
