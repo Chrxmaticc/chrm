@@ -22,6 +22,11 @@ Emoji resolution: ``bot.config.get_emoji(...)`` (config.json / dashboard) first,
 then the class defaults in :mod:`core.config` (``EMOJIS.DENY``), then a literal.
 A half-filled config still renders something recognisable.
 
+Branding: ``settings.brand`` / ``settings.tagline`` / ``settings.card_color``
+(written by ``.setbrand``, ``.settagline`` and ``.cardcolor``) override the name,
+footer and accent colour of every card, so this surface is not hard-wired to
+"chrm" or to one grey.
+
 Why this file is not three files: the feedback helpers and the help card are the
 same job -- "say something back on a context" -- and the help categories have to
 stay next to the plugins they describe. Keeping them together also means one
@@ -111,7 +116,7 @@ async def warn(ctx, text: str = "", **kwargs):
 # ==========================================
 TAGLINE = "*chrm on top.*"
 
-#: container accent colour for the cards
+#: container accent colour for the cards (``settings.card_color`` overrides it)
 ACCENT = 0x1F1F23
 
 #: invisible link text -- shows only the unfurled component card
@@ -133,7 +138,7 @@ CATEGORIES = {
         ("friendcount / pending", "friends, blocked, ignored, requests"),
         ("request accept|deny <@user | id>", "answer a friend request"),
         ("friendrename <@user> <nick> / resetname <@user>", "friend nicknames"),
-        ("unfriend <@user> / massunfriend confirm", "remove one friend, or all of them"),
+        ("unfriend <@user> / massunfriend confirm", "remove one, or all of them"),
         ("ignore <@user> / unignore <@user>", "hide someone without blocking"),
         ("mute [@user] / unmute [@user]", "silence a dm, or the one you are in"),
         ("unblock <@user>", "undo a block"),
@@ -155,6 +160,7 @@ CATEGORIES = {
         ("pinterest <query> | board <user>/<board> | user <name>", "pins, boards, profiles"),
         ("testrpc", "presence sanity check"),
         ("wordle / guess / wordleend / wordlestats", "five letters, six guesses, streaks"),
+        ("lobby wordle [secs] [@who] / join / start / party / gw <word>", "reaction lobby, multiplayer wordle"),
         ("trivia [category] / answer <text>", "one question per channel"),
         ("hangman / hguess / hangmanend", "guess the word before the rope"),
         ("blackjack / hit / stand", "one hand per channel"),
@@ -171,6 +177,8 @@ CATEGORIES = {
         ("editsnipe [index]", "last edited message"),
         ("reactionsnipe [index]", "last removed reaction"),
         ("transcript [amount]", "export the chat to html"),
+        ("remind <time> <text> / reminders / unremind", "reminders that survive a restart"),
+        ("todo add|list|done|rm|clear", "a list that stays put"),
         ("gcname <name> / spamname <count> <name>", "rename a group chat"),
         ("gcadd / gcremove / gclist / gcnuke / gcleave", "group chat members"),
         ("autoleave / autoadd [@user]", "auto leave invites, auto add to gcs"),
@@ -220,7 +228,9 @@ CATEGORIES = {
         ("alias add|remove|list", "command shortcuts"),
         ("schedule <time> <channel> <message>", "send a message later"),
         ("alibi <time> <channel> <message>", "look active on a timer"),
-        ("setname / setavatar [url] / setbanner [url]", "profile fields"),
+        ("setname / setavatar / setbanner / setbio / setaccent", "profile fields"),
+        ("setstatus / setactivity / setnick / clearnick", "presence and nicknames"),
+        ("customize / setbrand / settagline / cardcolor", "look, and the help-card branding"),
         ("addrotation / startrotation / stoprotation", "rotate profile art"),
         ("namerotator <names> <interval> / stopname", "rotate names"),
         ("reload <plugin> / restart", "hot reload, or restart the engine"),
@@ -273,6 +283,18 @@ EXTRA_KEYS = {
     "profile": "config",
     "pfp": "config",
     "automation": "config",
+    "lobby": "fun",
+    "party": "fun",
+    "join": "fun",
+    "remind": "utility",
+    "reminder": "utility",
+    "reminders": "utility",
+    "todo": "utility",
+    "todos": "utility",
+    "customize": "config",
+    "bio": "config",
+    "brand": "config",
+    "card": "config",
     "snipe": "utility",
     "sniping": "utility",
     "channels": "utility",
@@ -345,6 +367,42 @@ def resolve_category(arg: str):
 # ==========================================
 # 3. HELP CARDS
 # ==========================================
+def _settings(bot) -> dict:
+    """The ``settings`` namespace of the config, or ``{}`` when there is no bot."""
+    config = getattr(bot, "config", None)
+    data = getattr(config, "data", None)
+    if not isinstance(data, dict):
+        return {}
+    settings = data.get("settings")
+    return settings if isinstance(settings, dict) else {}
+
+
+def _brand(bot) -> str:
+    """``settings.brand``, else the account's own discord name."""
+    value = str(_settings(bot).get("brand") or "").strip()
+    return value or getattr(getattr(bot, "user", None), "name", "chrm")
+
+
+def _tagline(bot) -> str:
+    """``settings.tagline``, else :data:`TAGLINE`."""
+    value = str(_settings(bot).get("tagline") or "").strip()
+    return value or TAGLINE
+
+
+def _accent(bot) -> int:
+    """``settings.card_color`` as an int, else :data:`ACCENT`."""
+    raw = _settings(bot).get("card_color")
+    if isinstance(raw, bool) or raw is None:
+        return ACCENT
+    if isinstance(raw, int):
+        return raw & 0xFFFFFF
+    try:
+        text = str(raw).strip().lstrip("#")
+        return int(text, 16) & 0xFFFFFF if text else ACCENT
+    except ValueError:
+        return ACCENT
+
+
 def _prefix(bot) -> str:
     prefix = getattr(bot, "command_prefix", ".")
     prefix = prefix[0] if isinstance(prefix, (list, tuple)) else prefix
@@ -365,7 +423,7 @@ def build_index_components(bot, prefix: str):
         key = name.split(" & ")[0]
         lines.append(f"**{name}** · {len(entries)} · `{prefix}help {key}`")
 
-    name = getattr(getattr(bot, "user", None), "name", "chrm")
+    name = _brand(bot)
     children = [
         v2.text(f"### {name} — selfbot commands"),
         v2.text(f"prefix `{prefix}` · {len(CATEGORIES)} categories · {_total()} commands"),
@@ -386,13 +444,17 @@ def build_index_components(bot, prefix: str):
         v2.separator(spacing=1),
         v2.text("\n".join(lines)),
         v2.separator(spacing=2),
-        v2.text(f"run `{prefix}help <category>` to list one · {TAGLINE}"),
+        v2.text(f"run `{prefix}help <category>` to list one · {_tagline(bot)}"),
     ]
-    return [v2.container(*children, accent_color=ACCENT)]
+    return [v2.container(*children, accent_color=_accent(bot))]
 
 
-def build_category_components(prefix: str, name: str):
-    """One category's commands, plus the way back to the index."""
+def build_category_components(prefix: str, name: str, bot=None):
+    """One category's commands, plus the way back to the index.
+
+    ``bot`` is optional so the card can still be built (and size-checked) without
+    a live instance; without it the defaults in :data:`ACCENT` / :data:`TAGLINE` win.
+    """
     lines = [f"`{prefix}{usage}` — {desc}" for usage, desc in CATEGORIES[name]]
     children = [
         v2.text(f"### {name}"),
@@ -400,25 +462,25 @@ def build_category_components(prefix: str, name: str):
         v2.separator(spacing=1),
         v2.text("\n".join(lines)),
         v2.separator(spacing=2),
-        v2.text(f"`{prefix}help` for the category list · {TAGLINE}"),
+        v2.text(f"`{prefix}help` for the category list · {_tagline(bot)}"),
     ]
-    return [v2.container(*children, accent_color=ACCENT)]
+    return [v2.container(*children, accent_color=_accent(bot))]
 
 
 def build_plain(bot, prefix: str, name: str = None) -> str:
     names = [name] if name else list(CATEGORIES)
-    user = getattr(getattr(bot, "user", None), "name", "chrm")
+    user = _brand(bot)
     out = [f"**{user} — selfbot commands**", f"*prefix: `{prefix}`*", ""]
     for category in names:
         out.append(f"**{category}**")
         out.extend(f"`{prefix}{usage}`" for usage, _ in CATEGORIES[category])
         out.append("")
-    out.append(TAGLINE)
+    out.append(_tagline(bot))
     return "\n".join(out)
 
 
 def build_index_plain(bot, prefix: str) -> str:
-    user = getattr(getattr(bot, "user", None), "name", "chrm")
+    user = _brand(bot)
     out = [
         f"**{user} — selfbot commands**",
         f"*prefix: `{prefix}` · {len(CATEGORIES)} categories · {_total()} commands*",
@@ -428,7 +490,7 @@ def build_index_plain(bot, prefix: str) -> str:
         key = name.split(" & ")[0]
         out.append(f"**{name}** · {len(entries)} · `{prefix}help {key}`")
     out.append("")
-    out.append(TAGLINE)
+    out.append(_tagline(bot))
     return "\n".join(out)
 
 
@@ -471,7 +533,7 @@ async def send_bot_help(ctx, arg: str = None):
             f"no category `{arg}`. try `.help` for the list, or `.help text` for everything."
         )
 
-    await _send_card(ctx, build_category_components(prefix, name), prefix, name)
+    await _send_card(ctx, build_category_components(prefix, name, ctx.bot), prefix, name)
 
 
 # ==========================================
