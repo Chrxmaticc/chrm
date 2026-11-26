@@ -19,7 +19,7 @@ from plugins.levels.content import (
     JOKES, KISS, PAT, PICKUP, QUOTES, ROASTS, SIMP, SLAP, TRUTHS, WYR,
     hype, poll, pretty_duration, timer, topic,
 )
-from plugins.levels import text, tools
+from plugins.levels import extra, text, tools
 
 __all__ = [
     "Usage", "Unlock", "usage", "UNLOCKS", "TIERS", "by_level", "find",
@@ -79,6 +79,10 @@ TIERS = {
     4: "toolbox",
     5: "social",
     6: "deluxe",
+    7: "nightshift",
+    8: "workshop",
+    9: "guild",
+    10: "legend",
 }
 
 UNLOCKS = [
@@ -159,6 +163,34 @@ UNLOCKS = [
     Unlock("quoteit", 6, "turn text into a blockquote", _text("quoteit", text.quoteit)),
     Unlock("sign", 6, "box your text", _text("sign", text.sign)),
     Unlock("topcmd", 6, "your most used commands", tools.topcmd),
+
+    # ---------------------------------- level 7: nightshift
+    Unlock("progress", 7, "ten-cell bar for any fraction", extra.progress),
+    Unlock("subtext", 7, "small grey text", extra.subtext),
+    Unlock("strikethrough", 7, "~~cross it out~~", extra.strikethrough),
+    Unlock("underline", 7, "underline a message", extra.underline),
+    Unlock("codeblock", 7, "wrap text in a code block", extra.codeblock),
+
+    # ---------------------------------- level 8: workshop
+    Unlock("unicode", 8, "codepoints for a string", extra.unicode_lookup),
+    Unlock("json", 8, "pretty-print json", extra.json_pretty),
+    Unlock("jwt", 8, "decode a jwt header and payload", extra.jwt),
+    Unlock("slug", 8, "slugify a title", extra.slug),
+    Unlock("urlencode", 8, "url-encode text", extra.urlencode),
+
+    # ---------------------------------- level 9: guild
+    Unlock("caesar", 9, "caesar shift, default 3", extra.caesar),
+    Unlock("roman", 9, "roman numerals both ways", extra.roman),
+    Unlock("percent", 9, "what percent is a of b", extra.percent),
+    Unlock("split", 9, "split a bill with tip", extra.split_bill),
+    Unlock("sort", 9, "sort lines of text", extra.sort_lines),
+
+    # ---------------------------------- level 10: legend
+    Unlock("dedupe", 10, "drop duplicate lines", extra.dedupe),
+    Unlock("sum", 10, "total, mean, min and max", extra.sum_numbers),
+    Unlock("horoscope", 10, "today's reading, offline", extra.horoscope),
+    Unlock("tarot", 10, "draw a major arcana card", extra.tarot),
+    Unlock("piglatin", 10, "ellohay orldway", extra.piglatin),
 ]
 
 
