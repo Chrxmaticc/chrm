@@ -35,18 +35,46 @@ SETTLE_TRIES = 6
 #: emoji slots per boost tier
 EMOJI_SLOTS = {0: 50, 1: 100, 2: 150, 3: 250}
 
+#: smart punctuation rewrites "--" as an em dash on macOS and iOS
+_DASHES = str.maketrans({"\u2014": "-", "\u2013": "-", "\u2212": "-", "\u2010": "-", "\u2011": "-"})
+
 
 def clip(text, limit: int = 100) -> str:
     value = " ".join(str(text or "").split())
     return value if len(value) <= limit else value[: limit - 1].rstrip() + "…"
 
 
+def normalize(options: str) -> str:
+    """Turn every dash spelling of a flag into ``--flag``.
+
+    A phone keyboard sends ``.clone 123 —go``; the exact-match test used to
+    call that a plain flag-less plan, so the command looked broken. Single
+    dashes, em dashes and dashes separated from the word are accepted too.
+    """
+    text = str(options or "").translate(_DASHES).replace("`", "").strip()
+    tokens = []
+    pending = ""
+    for token in text.split():
+        if token and not token.strip("-"):
+            # a dash on its own: "-- go" and "- go" mean the same thing
+            pending = "--"
+            continue
+        if token.startswith("-"):
+            token = "--" + token.lstrip("-")
+        if pending:
+            token = pending + token.lstrip("-")
+            pending = ""
+        tokens.append(token)
+    return " ".join(tokens)
+
+
 def flag(options: str, name: str) -> str:
     """``--name Dune`` -> ``"Dune"``; everything after the flag, up to the next one."""
     tokens = (options or "").split()
-    if name not in tokens:
+    lowered = [token.lower() for token in tokens]
+    if name.lower() not in lowered:
         return ""
-    index = tokens.index(name) + 1
+    index = lowered.index(name.lower()) + 1
     collected = []
     while index < len(tokens) and not tokens[index].startswith("--"):
         collected.append(tokens[index])
@@ -207,6 +235,8 @@ class CloneMixin:
     @commands.cooldown(1, 30, commands.BucketType.user)
     async def clone(self, ctx, source: str = "", *, options: str = ""):
         """copy roles, categories, channels and settings into a new server. usage: .clone <id> --go"""
+        options = normalize(options)
+        flags = {token.lower() for token in options.split()}
         guilds = [guild for guild in getattr(self.bot, "guilds", [])]
         if not source:
             lines = [
@@ -237,8 +267,8 @@ class CloneMixin:
         ]
         emojis = list(getattr(origin, "emojis", []) or [])
         name = flag(options, "--name") or f"{origin.name} (clone)"
-        go = "--go" in (options or "").split()
-        copy_emojis = "--emojis" in (options or "").split()
+        go = "--go" in flags
+        copy_emojis = "--emojis" in flags
         capped = len(channels) > MAX_CHANNELS
 
         lines = [
@@ -252,6 +282,11 @@ class CloneMixin:
         if not go:
             lines.append("-# this is a plan and nothing was created — add `--go` to build it")
             lines.append("-# `--emojis` copies emoji art too, `--name <text>` renames the copy")
+            if flags and not flags & {"--go", "--emojis", "--name"}:
+                lines.append(
+                    f"-# saw `{clip(options, 60)}` but only `--go`, `--emojis` and "
+                    "`--name` are used"
+                )
             return await ctx.send("\n".join(lines))
 
         try:
