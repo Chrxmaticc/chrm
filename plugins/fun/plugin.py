@@ -10,6 +10,7 @@ Sub-cogs (``extended/``):
     device       client icon (desktop / phone / console / VR) via IDENTIFY
     pinterest    ``.pinterest`` pins, boards and profiles, no api key
     wordle       ``.wordle`` / ``.guess`` / ``.wordleend`` / ``.wordlestats``
+    party        ``.lobby`` / ``.join`` / ``.gw`` -- reaction lobbies, group wordle
     games        ``.slots`` / ``.blackjack`` / ``.unscramble`` / ``.nhie`` / ``.topic``
     trivia       ``.trivia`` / ``.answer``
     hangman      ``.hangman`` / ``.hguess`` / ``.hangmanend``
@@ -34,6 +35,7 @@ from plugins.fun.extended.fakechat import FakeChatMixin
 from plugins.fun.extended.fakeplay import FakePlayMixin
 from plugins.fun.extended.games import GamesMixin
 from plugins.fun.extended.hangman import HangmanMixin
+from plugins.fun.extended.party import PartyMixin
 from plugins.fun.extended.pinterest import PinterestMixin
 from plugins.fun.extended.randomness import RandomnessMixin
 from plugins.fun.extended.rpc import RPCMixin
@@ -54,6 +56,7 @@ class Fun(
     DeviceMixin,
     PinterestMixin,
     WordleMixin,
+    PartyMixin,
     GamesMixin,
     TriviaMixin,
     HangmanMixin,
@@ -86,6 +89,8 @@ class Fun(
         self.hangman_games = {}
         self.unscramble_games = {}
         self.blackjack_games = {}
+        # party: one lobby or party game per channel, keyed by id
+        self.party_games = {}
         features = self.bot.config.data.setdefault("features", {})
         self.wordle_stats = features.get("wordle") or {}
 

@@ -9,6 +9,7 @@ __all__ = [
     "fakeplay",
     "pinterest",
     "wordle",
+    "party",
     "games",
     "trivia",
     "hangman",
