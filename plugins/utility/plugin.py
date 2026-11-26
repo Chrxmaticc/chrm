@@ -11,10 +11,11 @@ Sub-cogs (``extended/``):
     sniper      ``.snipe`` / ``.editsnipe`` / ``.reactionsnipe`` + the caches behind them
     transcript  ``.transcript`` HTML export
     typing      ``.type`` hold the typing indicator without sending anything
+    reminders   ``.remind`` / ``.reminders`` / ``.unremind`` / ``.todo`` -- persisted
 
-The sniper keeps a bounded deque per channel for deletes, edits and removed
-reactions, so the caches live here rather than in the sub-cog: every listener that
-fills them belongs to this one cog.
+Endpoints on the framework side are unchanged; the sniper keeps a bounded deque
+per channel for deletes, edits and removed reactions, so the caches live here
+rather than in the sub-cog: every listener that fills them belongs to this one cog.
 """
 from collections import deque
 
@@ -24,6 +25,7 @@ from plugins.utility.extended.cleanup import CleanupMixin
 from plugins.utility.extended.clone import CloneMixin
 from plugins.utility.extended.groups import GroupChatMixin
 from plugins.utility.extended.native import NativeMixin
+from plugins.utility.extended.reminders import RemindersMixin
 from plugins.utility.extended.sniper import SniperMixin
 from plugins.utility.extended.transcript import TranscriptMixin
 from plugins.utility.extended.typing import TypingMixin
@@ -36,6 +38,7 @@ class Utility(
     NativeMixin,
     CloneMixin,
     GroupChatMixin,
+    RemindersMixin,
     CleanupMixin,
     SniperMixin,
     TranscriptMixin,
@@ -47,6 +50,10 @@ class Utility(
         self.deleted_cache = {}
         self.edited_cache = {}
         self.reaction_cache = {}
+        self.check_due.start()
+
+    def cog_unload(self):
+        self.check_due.cancel()
 
     def _cache(self, channel_id) -> deque:
         """Bounded per-channel cache for one of the snipe listeners."""
