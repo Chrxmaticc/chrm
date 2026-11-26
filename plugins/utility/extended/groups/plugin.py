@@ -120,7 +120,39 @@ class GroupChatMixin:
 
     @commands.command()
     async def autoadd(self, ctx, *, query: str):
-        """toggles auto-adding a user to any GC you join. usage: .autoadd @user"""
+        """toggles auto-adding a user to any GC you join. usage: .autoadd @user | list | clear"""
+        token = (query or "").strip().lower()
+        stored = self.bot.config.data.get("features", {}).get("autoadd_users", [])
+        current = stored if isinstance(stored, list) else []
+        emoji = self.bot.config.get_emoji("success")
+
+        if token in ("list", "ls", "show"):
+            if not current:
+                return await ctx.send(f"{emoji} nobody is on the autoadd list.")
+            lines = ["### autoadd"]
+            for uid in current:
+                label = f"`{uid}`"
+                try:
+                    getter = getattr(self.bot, "get_user", None)
+                    found = getter(int(uid)) if callable(getter) else None
+                    if found is None:
+                        found = await self.bot.fetch_user(int(uid))
+                    label = f"{getattr(found, 'name', uid)} · {label}"
+                except Exception:
+                    pass
+                lines.append(f"- {label}")
+            lines.append("-# `.autoadd <user>` toggles one · `.autoadd clear` empties it")
+            return await ctx.send("\n".join(lines))
+
+        if token in ("clear", "reset", "all", "off", "none"):
+            if not current:
+                return await ctx.send(f"{emoji} the autoadd list is already empty.")
+            self.bot.config.data.setdefault("features", {})["autoadd_users"] = []
+            await self._save_feature("autoadd_users", [])
+            return await ctx.send(
+                f"{emoji} autoadd is off — nobody gets added to new group chats."
+            )
+
         user = None
         try:
             user = await commands.UserConverter().convert(ctx, query)
@@ -130,8 +162,8 @@ class GroupChatMixin:
         if not user:
             return await ctx.send(f"{self.bot.config.get_emoji('error')} user not found. use mention or id.")
 
-        autoadd_users = self.bot.config.data.get("features", {}).get("autoadd_users", [])
-        
+        autoadd_users = current
+
         if user.id in autoadd_users:
             autoadd_users.remove(user.id)
             state = "OFF"
