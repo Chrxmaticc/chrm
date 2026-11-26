@@ -9,6 +9,7 @@ __all__ = [
     "responders",
     "aliases",
     "custom_cmds",
+    "customize",
     "scheduler",
     "prefs",
     "toolkit",

@@ -6,6 +6,8 @@ Sub-cogs (``extended/``):
     delay         ``.toggledelay`` -- the ``human_delay`` range ``main.py`` applies
     owner         ``.restart`` / ``.reload`` / ``.sysinfo`` (hardcoded ``OWNER_ID``)
     profile       ``.setavatar`` / ``.setbanner`` / ``.setname`` + rotation loop
+    customize     ``.setbio`` / ``.setaccent`` / ``.setstatus`` / ``.setactivity`` /
+                  ``.setnick`` / ``.setbrand`` / ``.settagline`` / ``.cardcolor``
     nickname      ``.namerotator`` rotation loop
     responders    auto-replies, auto-reactions, ``.afk``
     aliases       rewrite ``.s`` into ``.snipe`` before dispatch
@@ -31,6 +33,7 @@ from discord.ext import commands
 
 from plugins.config.extended.aliases import AliasesMixin
 from plugins.config.extended.custom_cmds import CustomCommandsMixin
+from plugins.config.extended.customize import CustomizeMixin
 from plugins.config.extended.delay import DelayMixin
 from plugins.config.extended.nickname import NicknameMixin
 from plugins.config.extended.owner import OwnerMixin
@@ -51,6 +54,7 @@ class Config(
     RespondersMixin,
     AliasesMixin,
     CustomCommandsMixin,
+    CustomizeMixin,
     SchedulerMixin,
     PrefsMixin,
     ToolkitMixin,
