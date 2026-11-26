@@ -34,7 +34,7 @@ from datetime import date, timedelta
 #: XP needed for one level
 XP_PER_LEVEL = 60
 #: last level; XP keeps accumulating past it
-MAX_LEVEL = 6
+MAX_LEVEL = 10
 #: XP for finishing any command
 COMMAND_XP = 10
 #: XP for a message you send, at most once per MESSAGE_COOLDOWN seconds
@@ -53,6 +53,10 @@ TITLES = {
     4: "chrmster",
     5: "chrmlord",
     6: "chrmprime",
+    7: "chrmknight",
+    8: "chrmking",
+    9: "chrmmyth",
+    10: "chrmgod",
 }
 
 #: how many recent days of activity are kept for streaks
@@ -234,6 +238,14 @@ ACHIEVEMENTS = [
      lambda s: _level(s) >= 4),
     ("maxed", "maxed out", "reach level 6", "👑",
      lambda s: _level(s) >= 6),
+    ("ascendant", "ascendant", "reach level 8", "🌌",
+     lambda s: _level(s) >= 8),
+    ("legend", "legend", "reach level 10", "🏆",
+     lambda s: _level(s) >= 10),
+    ("party_animal", "party animal", "open a lobby with .lobby", "🎉",
+     lambda s: "lobby" in _used(s)),
+    ("wordsmith", "wordsmith", "guess in a party wordle", "🔠",
+     lambda s: "gw" in _used(s)),
     ("grinder", "grinder", "run 250 commands", "⚙️",
      lambda s: _stats(s).get("commands", 0) >= 250),
     ("chatterbox", "chatterbox", "send 1,000 messages", "💬",
