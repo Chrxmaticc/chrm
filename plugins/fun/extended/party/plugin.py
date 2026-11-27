@@ -10,6 +10,21 @@ buttons (see ``core/ui/cv2.py``), so a ✅ is the one join control that works fo
 everyone in the channel, including people who never run a command. ``.join``
 exists for anyone who would rather type it.
 
+Why the listeners below exist: ``self_bot=True`` makes the command framework
+skip every message it did not write itself -- ``BotBase.__init__`` sets
+``_skip_check = lambda x, y: x != y`` and ``get_context`` returns an invalid
+context for anyone else's message, so a friend's ``.join`` was silently dropped
+before any of this code ran, and a friend's ``.gw`` too. ``on_message`` here
+re-reads those messages for a party that is running in that channel and builds a
+``_PlayerContext`` stand-in, so ``join`` / ``gw`` / ``party`` are written once
+and work for the account and for everyone else. Nothing outside a live party is
+touched: no other command answers to another user.
+
+The reaction half had its own bug: the ``Message`` returned by ``ctx.send`` is
+not the object the library keeps in its cache, so its ``reactions`` list never
+grows. Joins are therefore handled live by ``on_raw_reaction_add``, and the
+final sweep re-fetches the card before reading it.
+
 State is per channel in ``party_games`` and deliberately not persisted: a lobby
 that survives a restart is a message nobody can join any more.
 """
@@ -22,6 +37,9 @@ import time
 from discord.ext import commands
 
 from core import prefs
+from core.context import approve as _ctx_approve
+from core.context import deny as _ctx_deny
+from core.context import warn as _ctx_warn
 from plugins.fun.extended.wordle.plugin import MAX_GUESSES, WORD_LENGTH, board_line, score
 from plugins.fun.extended.wordle.words import ANSWERS
 
@@ -37,9 +55,52 @@ GAMES = ("wordle", "trivia", "hangman")
 #: names shown in the lobby card before it gets silly
 MAX_ROSTER = 20
 
+#: typed joins -> the command they run, for players who are not the account
+PLAYER_COMMANDS = {
+    "join": "join",
+    "joinparty": "join",
+    "gw": "gw",
+    "groupguess": "gw",
+    "partyguess": "gw",
+    "party": "party",
+    "partygame": "party",
+}
+
 
 def _mention(user_id) -> str:
     return f"<@{user_id}>"
+
+
+class _PlayerContext:
+    """The parts of ``commands.Context`` a player who is not the account needs.
+
+    The command framework will not build a real context for another user's
+    message while the client is a self-bot, so the party listeners hand the
+    existing ``join`` / ``gw`` / ``party`` callbacks this instead: it carries the
+    message, author and channel, and the feedback helpers installed on
+    ``commands.Context`` (``ctx.approve`` / ``ctx.deny`` / ``ctx.warn``) work
+    unchanged because they only ever touch those.
+    """
+
+    def __init__(self, bot, message):
+        self.bot = bot
+        self.message = message
+        self.author = message.author
+        self.channel = message.channel
+        self.guild = getattr(message, "guild", None)
+        self.command = None
+
+    async def send(self, content=None, **kwargs):
+        return await self.channel.send(content, **kwargs)
+
+    async def approve(self, text: str = "", **kwargs):
+        return await _ctx_approve(self, text, **kwargs)
+
+    async def deny(self, text: str = "", **kwargs):
+        return await _ctx_deny(self, text, **kwargs)
+
+    async def warn(self, text: str = "", **kwargs):
+        return await _ctx_warn(self, text, **kwargs)
 
 
 class PartyMixin:
@@ -47,10 +108,27 @@ class PartyMixin:
 
     # ------------------------------------------------------------ helpers
     def _party_game(self, ctx):
-        return self.party_games.get(getattr(ctx.channel, "id", 0))
+        return self.party_games.get(getattr(getattr(ctx, "channel", None), "id", 0))
 
     def _party_channel(self, ctx):
         return getattr(ctx, "channel", None)
+
+    def _party_prefixes(self) -> tuple:
+        """Every prefix the account answers to, as plain strings."""
+        prefix = getattr(self.bot, "command_prefix", None)
+        if prefix is None:
+            config = getattr(self.bot, "config", None)
+            getter = getattr(config, "get_prefixes", None)
+            if callable(getter):
+                try:
+                    prefix = getter()
+                except Exception:  # noqa: BLE001 - a broken config must not break joins
+                    prefix = None
+        if callable(prefix) or prefix is None:
+            return ()
+        if isinstance(prefix, str):
+            return (prefix,) if prefix else ()
+        return tuple(item for item in prefix if isinstance(item, str) and item)
 
     def _party_names(self, state) -> str:
         names = [player["name"] for player in state["players"].values()]
@@ -104,6 +182,16 @@ class PartyMixin:
     async def _collect_reactions(self, state):
         """Fold every ✅ reaction on the lobby card into the roster."""
         message = state.get("message")
+        if message is None:
+            return
+        channel = state.get("channel")
+        if channel is not None and getattr(message, "id", None):
+            try:
+                # The message we sent is not the one the library caches, so its
+                # reactions list never grows; ask discord for a fresh copy.
+                message = await channel.fetch_message(message.id)
+            except Exception as exc:  # noqa: BLE001 - deleted, no history perms
+                print(f"[PARTY] could not re-read the lobby card: {type(exc).__name__}: {exc}")
         for reaction in list(getattr(message, "reactions", None) or []):
             if str(getattr(reaction, "emoji", "")) != JOIN_EMOJI:
                 continue
@@ -112,6 +200,85 @@ class PartyMixin:
                     self._party_add(state, user)
             except Exception as exc:  # noqa: BLE001 - reaction cleared, no intent
                 print(f"[PARTY] could not read reactions: {type(exc).__name__}: {exc}")
+
+    # ------------------------------------------------------------ players
+    async def _run_for_player(self, name: str, ctx, **kwargs):
+        """Call one of this mixin's commands on behalf of another user."""
+        command = getattr(type(self), name, None)
+        callback = getattr(command, "callback", None)
+        if callback is None:
+            return None
+        return await callback(self, ctx, **kwargs)
+
+    async def _party_player_message(self, message):
+        """Let everyone else join and guess while a party runs in the channel."""
+        author = getattr(message, "author", None)
+        if author is None or getattr(author, "bot", False):
+            return
+        if getattr(author, "id", None) == getattr(getattr(self.bot, "user", None), "id", None):
+            return  # the account's own messages already go through the dispatcher
+        channel_id = getattr(getattr(message, "channel", None), "id", 0)
+        if channel_id not in self.party_games:
+            return
+
+        content = (getattr(message, "content", "") or "").strip()
+        used = next((item for item in self._party_prefixes() if content.startswith(item)), None)
+        if used is None:
+            return
+        name, _, rest = content[len(used):].strip().partition(" ")
+        command = PLAYER_COMMANDS.get(name.strip().lower())
+        if command is None:
+            return
+
+        ctx = _PlayerContext(self.bot, message)
+        if command == "gw":
+            return await self._run_for_player("gw", ctx, word=rest.strip())
+        return await self._run_for_player(command, ctx)
+
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        try:
+            await self._party_player_message(message)
+        except Exception as exc:  # noqa: BLE001 - a listener must not raise into the log spam
+            print(f"[PARTY] player message failed: {type(exc).__name__}: {exc}")
+
+    @commands.Cog.listener()
+    async def on_raw_reaction_add(self, payload):
+        """Register a ✅ the moment it lands, instead of only when the lobby ends."""
+        try:
+            if str(getattr(payload, "emoji", "")) != JOIN_EMOJI:
+                return
+            state = self.party_games.get(getattr(payload, "channel_id", 0))
+            if state is None or state.get("kind") != "lobby":
+                return
+            message = state.get("message")
+            if message is None or getattr(payload, "message_id", None) != getattr(message, "id", None):
+                return
+            user = self._reaction_user(payload)
+            if user is None or self._party_add(state, user):
+                if user is not None:
+                    await self._edit_lobby(state)
+        except Exception as exc:  # noqa: BLE001 - a listener must not raise
+            print(f"[PARTY] join reaction failed: {type(exc).__name__}: {exc}")
+
+    def _reaction_user(self, payload):
+        """The member behind a reaction, from the payload's cache or the guild."""
+        user = getattr(payload, "member", None)
+        if user is not None:
+            return user
+        user_id = getattr(payload, "user_id", None)
+        guild = None
+        guild_id = getattr(payload, "guild_id", None)
+        if guild_id:
+            getter = getattr(self.bot, "get_guild", None)
+            if callable(getter):
+                guild = getter(guild_id)
+        if guild is not None:
+            member = guild.get_member(user_id)
+            if member is not None:
+                return member
+        getter = getattr(self.bot, "get_user", None)
+        return getter(user_id) if callable(getter) else None
 
     # ------------------------------------------------------------ lobby
     @commands.command(name="lobby", aliases=["gamelobby", "partyup"])
@@ -155,6 +322,7 @@ class PartyMixin:
             "ends": time.time() + seconds,
             "event": asyncio.Event(),
             "message": None,
+            "channel": ctx.channel,
         }
         self._party_add(state, getattr(ctx, "author", None))
         self.party_games[channel_id] = state
